@@ -1,0 +1,113 @@
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[project]
+name = "nextorm"
+version = "0.1.0"
+description = "Modern Python ORM with async support, full type annotations and a generator-expression query DSL"
+authors = [
+    {name = "Henri Hulski", email = "henri@sancode.it"},
+]
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.12"
+keywords = ["orm", "async", "database", "sqlite", "postgresql", "mariadb", "ponyorm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/sancode/nextorm"
+Repository = "https://github.com/sancode/nextorm"
+Documentation = "https://github.com/sancode/nextorm#readme"
+Changelog = "https://github.com/sancode/nextorm/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+sqlite = ["aiosqlite>=0.20"]
+postgres = ["psycopg[binary]>=3.2"]
+mariadb = ["PyMySQL>=1.1", "asyncmy>=0.2"]
+
+[project.scripts]
+nextorm = "nextorm.migrations.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "pyright>=1.1",
+    "ruff>=0.9",
+    "aiosqlite>=0.20",
+    "mypy>=1.20.0",
+    "psycopg[binary]>=3.3.3",
+    "PyMySQL>=1.1.2",
+    "asyncmy>=0.2.11",
+    "types-PyMySQL>=1.1.0.20251220",
+]
+
+[tool.pdm.scripts]
+test = {cmd = "pytest", help = "Run tests"}
+coverage = {cmd = "pytest --cov=nextorm --cov-report=term-missing", help = "Run tests with coverage"}
+typecheck = {composite = ["pyright", "mypy"], help = "Run all type checkers"}
+pyright = {cmd = "pyright", help = "Run pyright type checker"}
+mypy = {cmd = "mypy", help = "Run mypy type checker"}
+lint = {cmd = "ruff check .", help = "Run ruff linter"}
+fix = {cmd = "ruff check --fix .", help = "Fix linting issues with ruff"}
+format = {cmd = "ruff format .", help = "Format code with ruff"}
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = [
+    # Triggered when the CLI module is imported as part of the package and then
+    # again executed as __main__ during migration tests — harmless.
+    "ignore:.*nextorm.migrations.cli.*found in sys.modules.*:RuntimeWarning",
+    # sqlite3.Connection objects can be GC'd slightly late when coverage.py tracing
+    # is active; the connections are always properly closed by __del__ / close().
+    "ignore:unclosed database:ResourceWarning",
+]
+
+[tool.coverage.run]
+source = ["nextorm"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "TC", "ANN"]
+ignore = ["ANN401", "TC001"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.pyright]
+include = ["nextorm", "tests", "stubs"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+stubPath = "stubs"
+venvPath = "."
+venv = ".venv"
+reportPrivateUsage = "none"
+# reportUnnecessaryTypeIgnoreComment = "warning"
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["nextorm", "tests", "stubs"]
+mypy_path = "stubs"
+# TypeAliasType subscripts (PEP 695) are transparent to mypy — no special plugin needed.
