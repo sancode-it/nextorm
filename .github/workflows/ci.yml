@@ -37,3 +37,24 @@ jobs:
 
       - name: Test (SQLite only — no DB server in CI)
         run: pdm run pytest tests/ --ignore=tests/providers -q
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install PDM
+        run: pip install pdm
+
+      - name: Install dependencies
+        run: pdm install
+
+      - name: Build docs (fail on warning)
+        run: pdm run sphinx-build -b html -W --keep-going docs/ docs/_build/html

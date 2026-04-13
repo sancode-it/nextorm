@@ -19,7 +19,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
       - name: Install PDM
         run: pip install pdm
@@ -35,3 +35,25 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  docs:
+    name: Publish docs to Read the Docs
+    runs-on: ubuntu-latest
+    needs: publish
+
+    steps:
+      - name: Trigger Read the Docs build (stable)
+        env:
+          RTD_TOKEN: ${{ secrets.RTD_TOKEN }}
+        run: |
+          curl -fsSL -X POST \
+            -H "Authorization: Token $RTD_TOKEN" \
+            "https://readthedocs.org/api/v3/projects/nextorm/versions/stable/builds/"
+
+      - name: Trigger Read the Docs build (latest)
+        env:
+          RTD_TOKEN: ${{ secrets.RTD_TOKEN }}
+        run: |
+          curl -fsSL -X POST \
+            -H "Authorization: Token $RTD_TOKEN" \
+            "https://readthedocs.org/api/v3/projects/nextorm/versions/latest/builds/"

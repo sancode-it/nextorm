@@ -1,0 +1,15 @@
+version: 2
+
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.13"
+  commands:
+    - pip install pdm
+    - pdm install --dev
+    - pdm run sphinx-build -b html -W --keep-going docs/ $READTHEDOCS_OUTPUT/html
+
+sphinx:
+  builder: html
+  configuration: docs/conf.py
+  fail_on_warning: true

@@ -29,7 +29,7 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/sancode/nextorm"
 Repository = "https://github.com/sancode/nextorm"
-Documentation = "https://github.com/sancode/nextorm#readme"
+Documentation = "https://nextorm.readthedocs.io/en/latest/"
 Changelog = "https://github.com/sancode/nextorm/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
@@ -53,6 +53,10 @@ dev = [
     "PyMySQL>=1.1.2",
     "asyncmy>=0.2.11",
     "types-PyMySQL>=1.1.0.20251220",
+    "sphinx>=9.1.0",
+    "furo>=2025.12.19",
+    "sphinx-copybutton>=0.5.2",
+    "sphinx-design>=0.7.0",
 ]
 
 [tool.pdm.scripts]
@@ -64,6 +68,8 @@ mypy = {cmd = "mypy", help = "Run mypy type checker"}
 lint = {cmd = "ruff check .", help = "Run ruff linter"}
 fix = {cmd = "ruff check --fix .", help = "Fix linting issues with ruff"}
 format = {cmd = "ruff format .", help = "Format code with ruff"}
+docs-html = {cmd = "sphinx-build -b html docs/ docs/_build/html", help = "Build HTML documentation"}
+docs-clean = {cmd = "rm -rf docs/_build", help = "Remove built documentation"}
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -1,0 +1,26 @@
+/* NextORM documentation — custom CSS overrides */
+
+/* Slightly wider content column on large screens */
+@media (min-width: 1400px) {
+    .wy-nav-content {
+        max-width: 900px;
+    }
+}
+
+/* Code block font size */
+.highlight pre {
+    font-size: 0.88em;
+}
+
+/* Tighten parameter lists */
+.field-list dt {
+    padding-top: 0.2em;
+}
+
+/* Subtle separator between API entries */
+dl.py.class,
+dl.py.function {
+    border-top: 1px solid var(--color-background-border);
+    padding-top: 0.75em;
+    margin-top: 0.5em;
+}
