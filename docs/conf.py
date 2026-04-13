@@ -51,7 +51,7 @@ html_css_files = ["custom.css"]
 html_theme_options = {
     "sidebar_hide_name": False,
     "navigation_with_keys": True,
-    "source_repository": "https://github.com/sancode/nextorm",
+    "source_repository": "https://github.com/sancode-it/nextorm",
     "source_branch": "main",
     "source_directory": "docs/",
     "dark_css_variables": {
@@ -64,7 +64,7 @@ html_theme_options = {
     "footer_icons": [
         {
             "name": "GitHub",
-            "url": "https://github.com/sancode/nextorm",
+            "url": "https://github.com/sancode-it/nextorm",
             "html": """
                 <svg stroke="currentColor" fill="currentColor" stroke-width="0"
                     viewBox="0 0 16 16">

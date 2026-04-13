@@ -1,6 +1,6 @@
 # NextORM
 
-[![CI](https://github.com/sancode/nextorm/actions/workflows/ci.yml/badge.svg)](https://github.com/sancode/nextorm/actions/workflows/ci.yml)
+[![CI](https://github.com/sancode-it/nextorm/actions/workflows/ci.yml/badge.svg)](https://github.com/sancode-it/nextorm/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/nextorm)](https://pypi.org/project/nextorm/)
 [![Python](https://img.shields.io/pypi/pyversions/nextorm)](https://pypi.org/project/nextorm/)
 [![License](https://img.shields.io/pypi/l/nextorm)](LICENSE)
