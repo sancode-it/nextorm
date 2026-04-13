@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.1 - 2026-04-13
+## 0.1.2 - 2026-04-13
 
 Initial release of NextORM, a modern Python ORM with async support and full type annotations. Features include:
 - Entity definitions with `PK`, `Req`, `Opt`, and relation fields
