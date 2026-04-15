@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="7 11.5 64 64"
+   role="img"
+   aria-label="NextORM icon"
+   version="1.1"
+   id="svg3"
+   width="64"
+   height="64"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <defs
+     id="defs3" />
+  <title
+     id="title1">NextORM</title>
+  <!-- Colon — two amber circles -->
+  <ellipse
+     cx="12.823348"
+     cy="33.504375"
+     fill="#d4890f"
+     id="circle1"
+     rx="5.8823938"
+     ry="5.5531254"
+     style="stroke-width:1.14308" />
+  <ellipse
+     cx="12.823348"
+     cy="53.495625"
+     fill="#d4890f"
+     id="circle2"
+     rx="5.8823938"
+     ry="5.5531254"
+     style="stroke-width:1.14308" />
+  <!-- Left bracket [ -->
+  <path
+     d="M 38.70588,23.508749 H 31.647008 V 63.491251 H 38.70588"
+     stroke="#d4890f"
+     stroke-width="5.71539"
+     fill="none"
+     stroke-linecap="square"
+     stroke-linejoin="miter"
+     id="path2" />
+  <!-- Cyan circle — centred inside the brackets -->
+  <ellipse
+     cx="49.294189"
+     cy="43.5"
+     fill="#0095c4"
+     id="circle3"
+     rx="10.588308"
+     ry="9.9956255"
+     style="stroke-width:1.14308" />
+  <!-- Right bracket ] -->
+  <path
+     d="m 61.058976,23.508749 h 7.058872 v 39.982502 h -7.058872"
+     stroke="#d4890f"
+     stroke-width="5.71539"
+     fill="none"
+     stroke-linecap="square"
+     stroke-linejoin="miter"
+     id="path3" />
+  <metadata
+     id="metadata3">
+    <rdf:RDF>
+      <cc:Work
+         rdf:about="">
+        <dc:title>NextORM</dc:title>
+      </cc:Work>
+    </rdf:RDF>
+  </metadata>
+</svg>

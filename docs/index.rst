@@ -1,5 +1,10 @@
-NextORM
-=======
+.. raw:: html
+
+   <h1>
+     <img src="_static/logo-light.svg" class="only-light" alt="NextORM logo"/>
+     <img src="_static/logo-dark.svg" class="only-dark" alt="NextORM logo"/>
+   </h1>
+
 
 .. image:: https://img.shields.io/pypi/v/nextorm
    :alt: PyPI version

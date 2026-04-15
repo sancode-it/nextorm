@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 216 56" role="img" aria-label="NextORM">
+  <title>NextORM</title>
+  <!--
+    Monospace type-annotation wordmark: `:Next[orm]`
+    ":"  and  "["  "]"  → amber #d4890f
+    "Next"              → gray  #d4d2c8
+    "orm"               → cyan  #2db8d5
+
+    The colon is raised by dy="-3" so it sits at visual mid-height of the
+    caps (compensates for fonts that render : near the baseline).
+    dy="3" on the following tspan resets the baseline.
+    dx="3" on "Next" gives a compact but readable gap after the colon
+    (narrower than a full monospace space).
+  -->
+  <text
+    x="2"
+    y="37"
+    font-family="'JetBrains Mono','Fira Code','Cascadia Code','SF Mono','Menlo','Consolas','Courier New',monospace"
+    font-size="36"
+    font-weight="700"
+  ><tspan dy="-3" fill="#d4890f">:</tspan><tspan dy="3" dx="3" fill="#d4d2c8">Next</tspan><tspan dx="-3" fill="#d4890f">[</tspan><tspan dx="-5" fill="#2db8d5">orm</tspan><tspan dx="-2" fill="#d4890f">]</tspan></text>
+</svg>

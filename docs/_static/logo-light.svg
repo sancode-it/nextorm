@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 216 56" role="img" aria-label="NextORM">
+  <title>NextORM</title>
+  <!--
+    Light-theme variant — same layout, adjusted to darker values for white/light
+    sidebar backgrounds:
+    ":"  and  "["  "]"  → amber  #a96a0c  (darker amber, ~3.8:1 on white)
+    "Next"             → warm gray  #4d4038  (dark warm brown-gray)
+    "orm"              → cyan  #006f96  (darker cyan, ~4.0:1 on white)
+  -->
+  <text
+    x="2"
+    y="37"
+    font-family="'JetBrains Mono','Fira Code','Cascadia Code','SF Mono','Menlo','Consolas','Courier New',monospace"
+    font-size="36"
+    font-weight="700"
+  ><tspan dy="-3" fill="#a96a0c">:</tspan><tspan dy="3" dx="3" fill="#4d4038">Next</tspan><tspan dx="-3" fill="#a96a0c">[</tspan><tspan dx="-5" fill="#006f96">orm</tspan><tspan dx="-2" fill="#a96a0c">]</tspan></text>
+</svg>

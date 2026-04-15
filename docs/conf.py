@@ -74,9 +74,12 @@ html_theme = "furo"
 html_title = "NextORM"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
+html_favicon = "_static/icon-64.png"
 
 html_theme_options = {
-    "sidebar_hide_name": False,
+    "light_logo": "logo-light.svg",
+    "dark_logo": "logo-dark.svg",
+    "sidebar_hide_name": True,
     "navigation_with_keys": True,
     "source_repository": "https://github.com/sancode-it/nextorm",
     "source_branch": "main",

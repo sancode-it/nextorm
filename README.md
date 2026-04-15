@@ -1,4 +1,11 @@
-# NextORM
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/_static/logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/_static/logo-light.svg">
+    <img alt="NextORM logo" src="docs/_static/logo.svg">
+  </picture>
+</h1>
+
 
 [![CI](https://github.com/sancode-it/nextorm/actions/workflows/ci.yml/badge.svg)](https://github.com/sancode-it/nextorm/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/nextorm)](https://pypi.org/project/nextorm/)
