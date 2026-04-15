@@ -27,6 +27,19 @@ jobs:
       - name: Install dependencies
         run: pdm install
 
+      - name: Set version from tag
+        # Strip the leading "v" from the tag name (v1.2.3 → 1.2.3) and write
+        # it into pyproject.toml. PDM's dynamic version field then carries this
+        # through to the built wheel/sdist and to importlib.metadata at runtime,
+        # so docs/conf.py picks it up automatically.
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          pdm run python -c "
+          import re, pathlib
+          p = pathlib.Path('pyproject.toml')
+          p.write_text(re.sub(r'(?m)^version = \".*\"', 'version = \"${VERSION}\"', p.read_text()))
+          "
+
       - name: Run tests before publishing
         run: pdm run pytest tests/ --ignore=tests/providers -q
 

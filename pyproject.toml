@@ -4,7 +4,7 @@ build-backend = "pdm.backend"
 
 [project]
 name = "nextorm"
-version = "0.1.2"
+version = "0.0.0"
 description = "Modern Python ORM with async support, full type annotations and a generator-expression query DSL"
 authors = [
     {name = "Henri Hulski", email = "henri@sancode.it"},

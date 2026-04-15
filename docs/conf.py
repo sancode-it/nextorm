@@ -1,6 +1,7 @@
 """Sphinx configuration for NextORM documentation."""
 
 import sys
+from importlib import metadata
 from pathlib import Path
 
 # Make the nextorm package importable without installation
@@ -13,7 +14,33 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 project = "NextORM"
 copyright = "2026, Henri Hulski"
 author = "Henri Hulski"
-release = "0.1.0"
+
+
+# The version info for the project you're documenting, acts as replacement for
+# |version| and |release|, also used in various other places throughout the
+# built documents.
+#
+# The short X.Y version.
+try:
+    version = metadata.version("nextorm")
+except metadata.PackageNotFoundError:
+    # Fallback for ReadTheDocs and other environments where the package isn't installed
+    # Try to get version from pyproject.toml
+    import os
+    import re
+
+    try:
+        pyproject_path = os.path.join(os.path.dirname(__file__), "..", "pyproject.toml")
+        with open(pyproject_path) as f:
+            content = f.read()
+        # Simple regex to extract version
+        version_match = re.search(r'version\s*=\s*["\']([^"\']+)["\']', content)
+        version = version_match.group(1) if version_match else "0.0.0"
+    except (FileNotFoundError, Exception):
+        version = "0.0.0"  # fallback for un-installed dev builds
+
+    release = version
+
 
 # ---------------------------------------------------------------------------
 # General Sphinx configuration
