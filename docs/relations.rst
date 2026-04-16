@@ -37,10 +37,6 @@ A classic foreign key — ``Comment`` belongs to one ``Post``:
        text: Req[str]
        post: Single[Post]            # FK → post.id  (required)
 
-The ``Set["Comment"]`` back-reference on ``Post`` is optional but enables
-collection access.  Without it, the relation is still a valid FK — you
-just cannot navigate from ``Post`` to its comments.
-
 Nullable FK (optional parent):
 
 .. code-block:: python

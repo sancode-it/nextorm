@@ -57,24 +57,13 @@ sides.  NextORM requires an explicit ``Single[T]`` (FK side) and ``Set[T]``
 
    # NextORM
    class Order(Entity):
-       lines: Set["OrderLine"]    # back-reference — see note below
+       lines: Set["OrderLine"]    # back-reference
 
    class OrderLine(Entity):
        order: Single[Order]       # explicit FK
 
 ``Single[T]`` creates a ``NOT NULL`` FK with ``ON DELETE CASCADE``.
 ``Single[T | None]`` creates a nullable FK with ``ON DELETE SET NULL``.
-
-.. note:: **Back-references are optional.**
-
-   You can omit ``lines: Set["OrderLine"]`` on ``Order`` entirely — the FK
-   column on ``OrderLine`` still exists and works.  The only thing you lose is
-   collection access from the ``Order`` side (``order.lines``).  Add the
-   ``Set[T]`` attribute whenever you need that reverse navigation.
-
-   When using ``validate_relations=True`` in :meth:`~nextorm.database.Database.generate_mapping`,
-   every ``Set[T]`` *you do declare* must have a matching ``Single[T]`` back-reference
-   on the target, and ambiguous cases require ``RelationSpec(reverse="...")``.
 
 Querying
 --------

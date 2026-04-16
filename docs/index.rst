@@ -49,12 +49,13 @@ It brings the expressive PonyORM query style into the era of Python 3.12+ type a
 
    class Tag(Entity):
        name: Req[str]
+       products: Set["Product"]
 
    class Product(Entity):
        name:  Req[str]
        price: Req[float]
        desc:  Opt[str]
-       tags:  Set["Tag"]
+       tags:  Set[Tag]
 
    db = Database(entities=[Tag, Product])
    db.bind("sqlite", ":memory:")
