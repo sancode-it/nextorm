@@ -47,8 +47,7 @@ jobs:
         run: pdm build
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-
+        run: pdm publish --no-build
   docs:
     name: Publish docs to Read the Docs
     runs-on: ubuntu-latest
