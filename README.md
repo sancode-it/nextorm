@@ -2,7 +2,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/_static/logo-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="docs/_static/logo-light.svg">
-    <img alt="NextORM logo" src="docs/_static/logo.svg">
+    <img alt="NextORM" src="docs/_static/logo.svg">
   </picture>
 </h1>
 
@@ -42,6 +42,7 @@ from nextorm import Database, Entity, PK, Req, Opt, Set, Single, db_session
 # Define entities — no database coupling required
 class Tag(Entity):
     name: Req[str]
+    products: Set["Product"]   # many-to-many back-reference
 
 class Product(Entity):
     name:  Req[str]
@@ -49,7 +50,7 @@ class Product(Entity):
     tags:  Set[Tag]    # many-to-many
 
 # Create and connect the database
-db = Database(entities=[Tag, Product])
+db = Database(entities=[Tag, Product])  # entities can also be auto-discovered
 db.bind("sqlite", ":memory:")
 db.generate_mapping(create_tables=True)
 
@@ -104,7 +105,7 @@ nextorm showmigrations   # list migration history
 NextORM's API is intentionally close to PonyORM's. The main differences:
 
 | PonyORM | NextORM |
-|---|---|
+| --- | --- |
 | `class Product(db.Entity)` | `class Product(Entity)` |
 | `Required(str)` | `Req[str]` |
 | `Optional(str)` | `Opt[str]` |
@@ -114,7 +115,6 @@ NextORM's API is intentionally close to PonyORM's. The main differences:
 | `select(p for p in Product if ...)` | identical |
 | `Product[42]` | identical |
 | `Product.get(name="x")` | identical |
-| `db.save(p)` required | auto-committed in `db_session` |
 
 See the [migration guide](https://nextorm.readthedocs.io/en/latest/ponyorm.html) for details.
 
