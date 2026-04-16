@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4 - 2026-04-16
+
+- Set `validate_relations` to `True` by default as auto-recovery of related entities is highly experimental and can lead to unexpected behavior
+- Remove mention of auto-recovery and optional back-references in the documentation
+- Use `pdm` for publishing in the CI workflow
+- Adjust the README
+
 ## 0.1.3 - 2026-04-15
 
 - Make app version handling dynamic to avoid hardcoding in pyproject.toml and docs/conf.py
