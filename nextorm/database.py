@@ -425,7 +425,7 @@ class Database:
     # ------------------------------------------------------------------
 
     def generate_mapping(
-        self, *, create_tables: bool = False, validate_relations: bool = False
+        self, *, create_tables: bool = False, validate_relations: bool = True
     ) -> None:
         """Build the internal schema and optionally create database tables.
 

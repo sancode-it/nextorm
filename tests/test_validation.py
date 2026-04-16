@@ -85,7 +85,7 @@ def test_validate_o2m_passes() -> None:
     """O2M with a proper ManyToOne back-ref should pass validation without error."""
     db = Database(entities=[ValBlog, ValBlogPost])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping(validate_relations=True)
+    db.generate_mapping()
     assert db.is_bound
 
 
@@ -93,7 +93,7 @@ def test_validate_m2m_passes() -> None:
     """M2M with Set on both sides should pass validation without error."""
     db = Database(entities=[ValPaper, ValPaperTag])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping(validate_relations=True)
+    db.generate_mapping()
     assert db.is_bound
 
 
@@ -102,7 +102,7 @@ def test_validate_missing_backref_raises_mapping_error() -> None:
     db = Database(entities=[NoBackrefParent, NoBackrefChild])
     db.bind("sqlite", ":memory:")
     with pytest.raises(MappingError, match="back-reference"):
-        db.generate_mapping(validate_relations=True)
+        db.generate_mapping()
 
 
 def test_validate_ambiguous_backrefs_raises_mapping_error() -> None:
@@ -110,14 +110,14 @@ def test_validate_ambiguous_backrefs_raises_mapping_error() -> None:
     db = Database(entities=[AmbigOwner, AmbigItem])
     db.bind("sqlite", ":memory:")
     with pytest.raises(MappingError, match="ambiguous"):
-        db.generate_mapping(validate_relations=True)
+        db.generate_mapping()
 
 
-def test_validate_false_by_default_does_not_raise() -> None:
+def test_validate_false_does_not_raise() -> None:
     """validate_relations=False (default) never raises even for broken schemas."""
     db = Database(entities=[NoBackrefParent, NoBackrefChild])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping()  # must not raise
+    db.generate_mapping(validate_relations=False)  # must not raise
 
 
 def test_mapping_error_is_exception() -> None:

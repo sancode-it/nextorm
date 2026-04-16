@@ -482,7 +482,7 @@ async def test_async_validate_relations_raises_mapping_error() -> None:
     db = AsyncDatabase(entities=[AsyncBadParent, AsyncBadKid])
     await db.bind("sqlite", ":memory:")
     with pytest.raises(MappingError, match="back-reference"):
-        await db.generate_mapping(validate_relations=True)
+        await db.generate_mapping()
     await db.close()
 
 
@@ -601,7 +601,7 @@ async def test_ensure_connection_raises_when_not_connected() -> None:
 
 @pytest.mark.asyncio
 async def test_generate_mapping_without_create_tables() -> None:
-    """generate_mapping(create_tables=False) builds schema without DDL (branch 183->exit)."""
+    """generate_mapping(create_tables=False) builds schema without DDL."""
     async with AsyncDatabase(entities=[AsyncUser]) as db:
         await db.bind("sqlite", ":memory:")
         await db.generate_mapping(create_tables=False)
@@ -610,21 +610,19 @@ async def test_generate_mapping_without_create_tables() -> None:
 
 @pytest.mark.asyncio
 async def test_validate_relations_valid_entities() -> None:
-    """generate_mapping(validate_relations=True) passes with proper back-references.
-    Covers: line 207 (direct-type _resolve), 212 (non-SET continue), 221->210 (back_refs exist).
-    """
+    """generate_mapping(validate_relations=True) passes with proper back-references."""
     db = AsyncDatabase(entities=[AsyncValidParent, AsyncValidChild])
     await db.bind("sqlite", ":memory:")
-    await db.generate_mapping(create_tables=True, validate_relations=True)
+    await db.generate_mapping(create_tables=True)  # validate_relations=True is the default
     await db.close()
 
 
 @pytest.mark.asyncio
 async def test_validate_relations_unresolved_target_skipped() -> None:
-    """_validate_relations skips Set with ForwardRef target not in entities (line 215)."""
+    """_validate_relations skips Set with ForwardRef target not in entities."""
     db = AsyncDatabase(entities=[AsyncParentUnknownKid])
     await db.bind("sqlite", ":memory:")
-    await db.generate_mapping(create_tables=True, validate_relations=True)
+    await db.generate_mapping(create_tables=True)
     await db.close()
 
 

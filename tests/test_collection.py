@@ -579,7 +579,7 @@ def test_prefetch_o2m_no_backref_continues() -> None:
     """O2M prefetch silently skips when target has no ManyToOne back-ref (line 568)."""
     db = Database(entities=[_NoBROwner, _NoBRChild])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping(create_tables=True)
+    db.generate_mapping(create_tables=True, validate_relations=False)
 
     with db_session:
         _NoBROwner(label="o")

@@ -547,7 +547,7 @@ class TestToDict:
 
         db = Database(entities=[Tag, Product, Comment])
         db.bind("sqlite", ":memory:")
-        db.generate_mapping(create_tables=True)
+        db.generate_mapping(create_tables=True, validate_relations=False)
         with db_session:
             p = Product(name="Book", price=10.0)
             db.flush()  # p.id set
@@ -568,7 +568,7 @@ class TestToDict:
 
         db = Database(entities=[Tag, Product, Comment])
         db.bind("sqlite", ":memory:")
-        db.generate_mapping(create_tables=True)
+        db.generate_mapping(create_tables=True, validate_relations=False)
         with db_session:
             p = Product(name="Book", price=10.0)
         d = p.to_dict(with_collections=False)
@@ -581,7 +581,7 @@ class TestToDict:
 
         db = Database(entities=[Tag, Product, Comment])
         db.bind("sqlite", ":memory:")
-        db.generate_mapping(create_tables=True)
+        db.generate_mapping(create_tables=True, validate_relations=False)
         with db_session:
             p = Product(name="Book", price=10.0)
         # only=["id"] means collection names "tags"/"comments" are not in only → continue
@@ -596,7 +596,7 @@ class TestToDict:
 
         db = Database(entities=[Tag, Product, Comment])
         db.bind("sqlite", ":memory:")
-        db.generate_mapping(create_tables=True)
+        db.generate_mapping(create_tables=True, validate_relations=False)
         with db_session:
             p = Product(name="Book", price=10.0)
         d = p.to_dict(exclude=["tags"], with_collections=True)
@@ -605,12 +605,12 @@ class TestToDict:
         db.close()
 
     def test_with_collections_manytoone_not_included(self) -> None:
-        """ManyToOne relations are skipped in with_collections mode (branch 646->640)."""
+        """ManyToOne relations are skipped in with_collections mode."""
         from nextorm.database import Database  # noqa: PLC0415
 
         db = Database(entities=[Tag, Product, Comment])
         db.bind("sqlite", ":memory:")
-        db.generate_mapping(create_tables=True)
+        db.generate_mapping(create_tables=True, validate_relations=False)
         with db_session:
             p = Product(name="Book", price=10.0)
             db.flush()  # p.id set
@@ -814,7 +814,7 @@ class TestToDictRelatedObjects:
 
         db = Database(entities=[Tag, Product, Comment])
         db.bind("sqlite", ":memory:")
-        db.generate_mapping(create_tables=True)
+        db.generate_mapping(create_tables=True, validate_relations=False)
 
         with db_session:
             p = Product(name="Gadget", price=9.99)
@@ -836,7 +836,7 @@ class TestToDictRelatedObjects:
 
         db = Database(entities=[Tag, Product, Comment])
         db.bind("sqlite", ":memory:")
-        db.generate_mapping(create_tables=True)
+        db.generate_mapping(create_tables=True, validate_relations=False)
 
         with db_session:
             p = Product(name="Widget", price=4.99)
@@ -856,7 +856,7 @@ class TestToDictRelatedObjects:
 
         db = Database(entities=[Tag, Product, Comment])
         db.bind("sqlite", ":memory:")
-        db.generate_mapping(create_tables=True)
+        db.generate_mapping(create_tables=True, validate_relations=False)
 
         with db_session:
             p = Product(name="Thing", price=1.99)
@@ -877,7 +877,7 @@ class TestToDictRelatedObjects:
 
         db = Database(entities=[Tag, Product, Comment])
         db.bind("sqlite", ":memory:")
-        db.generate_mapping(create_tables=True)
+        db.generate_mapping(create_tables=True, validate_relations=False)
 
         with db_session:
             p = Product(name="Filter", price=2.99)
@@ -898,7 +898,7 @@ class TestToDictRelatedObjects:
 
         db = Database(entities=[Tag, Product, Comment])
         db.bind("sqlite", ":memory:")
-        db.generate_mapping(create_tables=True)
+        db.generate_mapping(create_tables=True, validate_relations=False)
 
         with db_session:
             p = Product(name="Excl", price=3.99)
@@ -919,7 +919,7 @@ class TestToDictRelatedObjects:
 
         db = Database(entities=[Tag, Product, Comment])
         db.bind("sqlite", ":memory:")
-        db.generate_mapping(create_tables=True)
+        db.generate_mapping(create_tables=True, validate_relations=False)
 
         # Save a product and load a comment; then manually clear the FK to None
         # to exercise the fk_id is None branch in to_dict(related_objects=True).

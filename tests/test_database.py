@@ -281,7 +281,7 @@ def test_generate_mapping_requires_bind() -> None:
 def test_generate_mapping_builds_schema() -> None:
     db = Database(entities=[Article, Tag])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping()
+    db.generate_mapping(validate_relations=False)
     assert len(db.schema) >= 2
     db.close()
 
@@ -289,7 +289,7 @@ def test_generate_mapping_builds_schema() -> None:
 def test_generate_mapping_create_tables_produces_ddl() -> None:
     db = Database(entities=[Article, Tag])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping(create_tables=True)
+    db.generate_mapping(create_tables=True, validate_relations=False)
     ddl = db.get_ddl()
     assert len(ddl) >= 2
     assert all("CREATE TABLE" in stmt for stmt in ddl)
@@ -299,7 +299,7 @@ def test_generate_mapping_create_tables_produces_ddl() -> None:
 def test_generate_mapping_no_create_tables_produces_no_ddl() -> None:
     db = Database(entities=[Article, Tag])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping(create_tables=False)
+    db.generate_mapping(create_tables=False, validate_relations=False)
     assert db.get_ddl() == []
     db.close()
 
@@ -342,7 +342,7 @@ def test_schema_returns_copy() -> None:
     """Mutating the returned dict must not affect internal state."""
     db = Database(entities=[Article, Tag])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping()
+    db.generate_mapping(validate_relations=False)
     snap1 = db.schema
     snap1.clear()
     assert db.schema != {}
@@ -365,7 +365,7 @@ def test_generate_mapping_create_tables_keeps_connection_open() -> None:
     """generate_mapping(create_tables=True) keeps a persistent connection."""
     db = Database(entities=[Article])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping(create_tables=True)
+    db.generate_mapping(create_tables=True, validate_relations=False)
     assert db._connection is not None
     db.close()
     assert db._connection is None
@@ -374,7 +374,7 @@ def test_generate_mapping_create_tables_keeps_connection_open() -> None:
 def test_context_manager_closes_connection() -> None:
     with Database(entities=[Article]) as db:
         db.bind("sqlite", ":memory:")
-        db.generate_mapping(create_tables=True)
+        db.generate_mapping(create_tables=True, validate_relations=False)
     # Connection is closed after exiting the block
     assert db._connection is None
 
@@ -383,7 +383,7 @@ def test_del_closes_open_connection() -> None:
     """Database.__del__ closes the connection when the object is garbage collected."""
     db = Database(entities=[Article])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping(create_tables=True)
+    db.generate_mapping(create_tables=True, validate_relations=False)
     assert db._connection is not None
     db.__del__()
     assert db._connection is None
@@ -398,7 +398,7 @@ def test_do_insert_with_no_pk_field_does_not_set_pk() -> None:
     """An entity with composite PK (no single auto-PK) skips the PK write-back."""
     db = Database(entities=[Article])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping(create_tables=True)
+    db.generate_mapping(create_tables=True, validate_relations=False)
     entity_cls = Article
     table = db._schema["article"]
     obj = Article(title="hello")
@@ -418,7 +418,7 @@ def test_do_insert_rowid_none_does_not_set_pk() -> None:
     """When _execute_insert returns None the PK is not overwritten."""
     db = Database(entities=[Article])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping(create_tables=True)
+    db.generate_mapping(create_tables=True, validate_relations=False)
     obj = Article(title="hello")
     table = db._schema["article"]
     with patch.object(db, "_execute_insert", return_value=None):
@@ -436,7 +436,7 @@ def test_delete_instance_no_pk_field_raises() -> None:
     "`delete_instance` raises RuntimeError when entity has no PK fields."
     db = Database(entities=[Article])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping(create_tables=True)
+    db.generate_mapping(create_tables=True, validate_relations=False)
     with db_session:
         obj = Article(title="X")
     # Temporarily remove the PK fields info to simulate the edge case
@@ -480,7 +480,7 @@ def test_save_inside_session_pk_is_none_no_cache_put() -> None:
 
     db = Database(entities=[Article])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping(create_tables=True)
+    db.generate_mapping(create_tables=True, validate_relations=False)
     with patch.object(db, "_execute_insert", return_value=None), db_session:
         obj = Article(title="session_pkNone")
     # pk was not written back because _execute_insert returned None
@@ -494,29 +494,29 @@ def test_save_inside_session_pk_is_none_no_cache_put() -> None:
 
 
 def test_validate_relations_forwardref_target_resolves() -> None:
-    """Set with ForwardRef target is resolved via entity_by_name (line 484)."""
+    """Set with ForwardRef target is resolved via entity_by_name."""
     db = Database(entities=[_FROwner, _FRTarget])
     db.bind("sqlite", ":memory:")
     # validate_relations=True → _validate_relations called; ForwardRef target resolves fine
-    db.generate_mapping(create_tables=True, validate_relations=True)
+    db.generate_mapping(create_tables=True)  # validate_relations=True is the default
     db.close()
 
 
 def test_validate_relations_unresolvable_string_skipped() -> None:
-    """Set['NonExistent'] target is unresolvable → continue without error (line 496)."""
+    """Set['NonExistent'] target is unresolvable → continue without error."""
     db = Database(entities=[_UnresolvableOwner])
     db.bind("sqlite", ":memory:")
     # _validate_relations called → target not found → continue (no error)
-    db.generate_mapping(create_tables=True, validate_relations=True)
+    db.generate_mapping(create_tables=True)
     db.close()
 
 
 def test_validate_relations_ambiguous_raises() -> None:
-    """Ambiguous back-refs without reverse= raises MappingError (lines 518-525)."""
+    """Ambiguous back-refs without reverse= raises MappingError."""
     db = Database(entities=[_Owner2, _Thing2])
     db.bind("sqlite", ":memory:")
     with pytest.raises(MappingError, match="ambiguous"):
-        db.generate_mapping(create_tables=True, validate_relations=True)
+        db.generate_mapping(create_tables=True)
     db.close()
 
 
@@ -526,7 +526,7 @@ def test_validate_relations_ambiguous_raises() -> None:
 
 
 def test_do_update_with_relations_covers_fk_loop() -> None:
-    """_do_update iterates relations and appends FK assignments (lines 438-443)."""
+    """_do_update iterates relations and appends FK assignments."""
     db = Database(entities=[_FKParent, _FKChild])
     db.bind("sqlite", ":memory:")
     db.generate_mapping(create_tables=True)
@@ -542,10 +542,10 @@ def test_do_update_with_relations_covers_fk_loop() -> None:
 
 
 def test_do_update_set_relation_skipped_in_loop() -> None:
-    """_do_update loop skips SET relations (False branch of 440 → back to 439)."""
+    """_do_update loop skips SET relations."""
     db = Database(entities=[Article, Tag])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping(create_tables=True)
+    db.generate_mapping(create_tables=True, validate_relations=False)
     with db_session:
         art = Article(id=1, title="initial")
         art.title = "updated"
@@ -562,7 +562,7 @@ def test_insert_auto_pk_none_behaves_like_save() -> None:
     """insert() with no PK value auto-generates one, same as save()."""
     db = Database(entities=[Article])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping(create_tables=True)
+    db.generate_mapping(create_tables=True, validate_relations=False)
     art = Article(title="new article")
     db.insert(art)
     assert art.id is not None
@@ -573,7 +573,7 @@ def test_insert_auto_pk_with_value_overrides_autoincrement() -> None:
     """insert() with a pre-set auto-PK value passes it explicitly to the INSERT."""
     db = Database(entities=[Article])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping(create_tables=True)
+    db.generate_mapping(create_tables=True, validate_relations=False)
     art = Article(title="seeded")
     art.id = 999
     db.insert(art)
@@ -589,7 +589,7 @@ def test_insert_user_assigned_pk() -> None:
     """insert() allows inserting entities with user-assigned (non-auto) PKs."""
     db = Database(entities=[_UserPKItem])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping(create_tables=True)
+    db.generate_mapping(create_tables=True, validate_relations=False)
     item = _UserPKItem(id=7, label="seven")
     db.insert(item)
     assert item.id == 7
@@ -641,7 +641,7 @@ def test_insert_unmapped_entity_raises() -> None:
 
     db = Database(entities=[Article])
     db.bind("sqlite", ":memory:")
-    db.generate_mapping(create_tables=True)
+    db.generate_mapping(create_tables=True, validate_relations=False)
     with pytest.raises(RuntimeError, match="not in the mapped schema"):
         db.insert(_Ghost(name="nobody"))
     db.close()
@@ -914,7 +914,7 @@ def test_lazy_field_with_single_relation_explicit_column_map() -> None:
 
     db2 = Database(entities=[Tag, _LazyWithSet])
     db2.bind("sqlite", ":memory:")
-    db2.generate_mapping(create_tables=True)
+    db2.generate_mapping(create_tables=True, validate_relations=False)
     qs2 = db2.select(_LazyWithSet)
     sel2 = qs2._build_select()
     assert not any(isinstance(c, Star) for c in sel2.columns)
