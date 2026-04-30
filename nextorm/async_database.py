@@ -28,7 +28,7 @@ import contextlib
 import sys
 import time
 import typing
-from typing import IO, Any, TypeVar
+from typing import IO, Any
 
 from nextorm.database import (
     _DDL_RENDERERS,
@@ -66,8 +66,6 @@ from nextorm.sql.nodes import (
 )
 
 __all__ = ["AsyncDatabase", "AsyncQuerySet"]
-
-T = TypeVar("T", bound=Entity)
 
 
 class AsyncDatabase:
@@ -337,7 +335,7 @@ class AsyncDatabase:
     # Query API
     # ------------------------------------------------------------------
 
-    def aselect(self, entity_class: type[T]) -> AsyncQuerySet[T]:
+    def aselect[ET: Entity](self, entity_class: type[ET]) -> AsyncQuerySet[ET]:
         """Return an :class:`AsyncQuerySet` for *entity_class*.
 
         :meth:`generate_mapping` must have been called first.
@@ -353,7 +351,7 @@ class AsyncDatabase:
         if table is None:
             raise RuntimeError(f"Entity {entity_class.__name__!r} is not in the mapped schema.")
         assert self._builder is not None
-        qs: AsyncQuerySet[T] = AsyncQuerySet(entity_class, table, self, self._builder)
+        qs: AsyncQuerySet[ET] = AsyncQuerySet(entity_class, table, self, self._builder)
         # STI: automatically filter by discriminator value for child entities
         disc_val = entity_class._discriminator_val_
         if disc_val is not None and entity_class._sti_parent_ is not None:

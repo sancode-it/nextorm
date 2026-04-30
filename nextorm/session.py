@@ -39,7 +39,7 @@ import functools
 import inspect
 import threading
 from contextlib import asynccontextmanager, contextmanager, suppress
-from typing import TYPE_CHECKING, Any, ParamSpec, Self, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Self, overload
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Generator
@@ -48,9 +48,6 @@ from nextorm.entity import Entity
 from nextorm.exceptions import TransactionError
 
 __all__ = ["SessionCache", "db_session", "async_db_session"]
-
-_P = ParamSpec("_P")
-_T = TypeVar("_T")
 
 
 def _collect_dbs(cache: SessionCache | None) -> list[Any]:
@@ -460,7 +457,7 @@ class DBSessionManager:
     # Calling ``with db_session():`` creates a temporary manager so that both
     # ``with db_session:`` and ``with db_session():`` work identically.
     @overload
-    def __call__(self, func: Callable[_P, _T], /) -> Callable[_P, _T]: ...
+    def __call__[T, **P](self, func: Callable[P, T], /) -> Callable[P, T]: ...
 
     @overload
     def __call__(

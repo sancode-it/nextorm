@@ -16,7 +16,7 @@ Usage::
 from __future__ import annotations
 
 from collections.abc import Iterator  # noqa: TC003
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from nextorm.database import Database
@@ -25,10 +25,8 @@ if TYPE_CHECKING:
 
 __all__ = ["RelatedCollection"]
 
-T = TypeVar("T", bound="Entity")
 
-
-class RelatedCollection[T: "Entity"]:
+class RelatedCollection[T: Entity]:
     """A lazy, database-backed collection representing one side of a relation.
 
     Instances are created by :class:`~nextorm.entity.SetDescriptor` on

@@ -28,7 +28,7 @@ Usage::
 from __future__ import annotations
 
 import sys
-from typing import IO, TYPE_CHECKING, Any, TypeVar, cast
+from typing import IO, TYPE_CHECKING, Any, cast
 
 from nextorm.entity import _LAZY_SENTINEL, Entity
 from nextorm.fields import RelationKind
@@ -57,8 +57,6 @@ if TYPE_CHECKING:
     from nextorm.database import Database
 
 __all__ = ["QuerySet", "EntityProxy"]
-
-T = TypeVar("T", bound=Entity)
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +161,7 @@ def _build_explicit_column_map(
 # ---------------------------------------------------------------------------
 
 
-class QuerySet[T: Entity]:
+class QuerySet[ET: Entity]:
     """A lazy, immutable query builder for a single entity type.
 
     Each method returns a *new* :class:`QuerySet` — the original is unchanged —
@@ -176,7 +174,7 @@ class QuerySet[T: Entity]:
 
     def __init__(
         self,
-        entity_class: type[T],
+        entity_class: type[ET],
         table: Table,
         db: Database,
         builder: SQLBuilder,
@@ -213,8 +211,8 @@ class QuerySet[T: Entity]:
     # Clone
     # ------------------------------------------------------------------
 
-    def _clone(self) -> QuerySet[T]:
-        q: QuerySet[T] = object.__new__(type(self))
+    def _clone(self) -> QuerySet[ET]:
+        q: QuerySet[ET] = object.__new__(type(self))
         q._entity_class = self._entity_class
         q._table = self._table
         q._db = self._db
@@ -238,7 +236,7 @@ class QuerySet[T: Entity]:
     # Chainable query modifiers (return a new QuerySet)
     # ------------------------------------------------------------------
 
-    def filter(self, *conditions: SqlNode) -> QuerySet[T]:
+    def filter(self, *conditions: SqlNode) -> QuerySet[ET]:
         """Narrow results with one or more WHERE conditions.
 
         Multiple conditions are combined with ``AND``::
@@ -251,7 +249,7 @@ class QuerySet[T: Entity]:
             q._where = cond if q._where is None else BinOp(q._where, "AND", cond)
         return q
 
-    def where(self, predicate: Callable[[Any], BinOp]) -> QuerySet[T]:
+    def where(self, predicate: Callable[[Any], BinOp]) -> QuerySet[ET]:
         """Narrow results using a lambda predicate over a column proxy.
 
         The lambda receives an :class:`EntityProxy` whose attribute accesses
@@ -269,7 +267,7 @@ class QuerySet[T: Entity]:
         cond = predicate(proxy)
         return self.filter(cond)
 
-    def order_by(self, *items: OrderItem) -> QuerySet[T]:
+    def order_by(self, *items: OrderItem) -> QuerySet[ET]:
         """Set the ``ORDER BY`` clause, replacing any previous ordering.
 
         Use :meth:`~nextorm.expr.ColumnExpr.asc` / :meth:`~nextorm.expr.ColumnExpr.desc`
@@ -281,13 +279,13 @@ class QuerySet[T: Entity]:
         q._order = tuple(items)
         return q
 
-    def limit(self, n: int) -> QuerySet[T]:
+    def limit(self, n: int) -> QuerySet[ET]:
         """Limit the number of rows returned."""
         q = self._clone()
         q._lim = n
         return q
 
-    def offset(self, n: int) -> QuerySet[T]:
+    def offset(self, n: int) -> QuerySet[ET]:
         """Skip the first *n* rows."""
         q = self._clone()
         q._off = n
@@ -300,7 +298,7 @@ class QuerySet[T: Entity]:
         *,
         join_type: str = "INNER",
         alias: str | None = None,
-    ) -> QuerySet[T]:
+    ) -> QuerySet[ET]:
         """Add a JOIN clause to the query.
 
         Parameters
@@ -327,7 +325,7 @@ class QuerySet[T: Entity]:
         q._joins = (*q._joins, (join_type, table_name, alias, on))
         return q
 
-    def prefetch(self, *relation_attrs: Any) -> QuerySet[T]:
+    def prefetch(self, *relation_attrs: Any) -> QuerySet[ET]:
         """Declare relations to eager-load alongside the main query.
 
         After :meth:`fetch_all` executes the main SELECT, one additional query
@@ -365,7 +363,7 @@ class QuerySet[T: Entity]:
     # Terminal methods — execute and return results
     # ------------------------------------------------------------------
 
-    def fetch_all(self) -> list[T]:
+    def fetch_all(self) -> list[ET]:
         """Execute the query and return all matching entity instances."""
         stmt = self._build_select()
         sql, params = self._builder.render(stmt)
@@ -375,7 +373,7 @@ class QuerySet[T: Entity]:
             self._do_prefetch(results)
         return results
 
-    def fetch_one(self) -> T | None:
+    def fetch_one(self) -> ET | None:
         """Execute with ``LIMIT 1`` and return the first entity, or ``None``."""
         stmt = self._build_select(extra_limit=1)
         sql, params = self._builder.render(stmt)
@@ -387,7 +385,7 @@ class QuerySet[T: Entity]:
             self._do_prefetch([result])
         return result
 
-    def first(self) -> T | None:
+    def first(self) -> ET | None:
         """Alias for :meth:`fetch_one`."""
         return self.fetch_one()
 
@@ -416,7 +414,7 @@ class QuerySet[T: Entity]:
         rows = self._db._execute(sql, params)
         return bool(rows)
 
-    def get(self) -> T | None:
+    def get(self) -> ET | None:
         """Return the single matching entity, or ``None`` if no rows match.
 
         Raises :exc:`~nextorm.exceptions.MultipleObjectsFoundError` if more
@@ -441,7 +439,7 @@ class QuerySet[T: Entity]:
             )
         return self._map_row(rows[0])
 
-    def get_or_raise(self) -> T:
+    def get_or_raise(self) -> ET:
         """Return the single matching entity; raise if zero or more-than-one match.
 
         Raises :exc:`~nextorm.exceptions.ObjectNotFound` when no row matches.
@@ -495,19 +493,19 @@ class QuerySet[T: Entity]:
         sql, params = self._builder.render(stmt)
         return self._db._execute_dml(sql, params)
 
-    def distinct(self) -> QuerySet[T]:
+    def distinct(self) -> QuerySet[ET]:
         """Enable ``SELECT DISTINCT`` for this query."""
         q = self._clone()
         q._distinct = True
         return q
 
-    def without_distinct(self) -> QuerySet[T]:
+    def without_distinct(self) -> QuerySet[ET]:
         """Disable ``SELECT DISTINCT`` (reverses a previous :meth:`distinct` call)."""
         q = self._clone()
         q._distinct = False
         return q
 
-    def for_update(self, *, skip_locked: bool = False, nowait: bool = False) -> QuerySet[T]:
+    def for_update(self, *, skip_locked: bool = False, nowait: bool = False) -> QuerySet[ET]:
         """Append a ``FOR UPDATE`` (or ``FOR UPDATE SKIP LOCKED`` / ``FOR UPDATE NOWAIT``) clause.
 
         Useful for pessimistic locking.  The behaviour is provider-specific:
@@ -541,7 +539,7 @@ class QuerySet[T: Entity]:
         """
         return self.count()
 
-    def __getitem__(self, index: int | slice) -> T | list[T]:
+    def __getitem__(self, index: int | slice) -> ET | list[ET]:
         """Fetch a single item by integer index or a slice of items.
 
         Integer index (0-based)::
@@ -576,7 +574,7 @@ class QuerySet[T: Entity]:
             return qs.fetch_all()
         raise TypeError(f"indices must be int or slice, not {type(index).__name__}")
 
-    def page(self, pagenum: int, pagesize: int = 10) -> QuerySet[T]:
+    def page(self, pagenum: int, pagesize: int = 10) -> QuerySet[ET]:
         """Return a page of results.
 
         Page numbers are 1-based.  Equivalent to
@@ -588,7 +586,7 @@ class QuerySet[T: Entity]:
             raise ValueError("pagenum must be >= 1")
         return self.offset((pagenum - 1) * pagesize).limit(pagesize)
 
-    def random(self, n: int) -> QuerySet[T]:
+    def random(self, n: int) -> QuerySet[ET]:
         """Return *n* randomly ordered rows.
 
         Uses ``ORDER BY RANDOM()`` (SQLite / PostgreSQL) or
@@ -758,7 +756,7 @@ class QuerySet[T: Entity]:
             print(line, file=out)
         print(sep, file=out)
 
-    def raw(self, sql: str, params: list[Any] | None = None) -> list[T]:
+    def raw(self, sql: str, params: list[Any] | None = None) -> list[ET]:
         """Execute *sql* and map each result row to an entity instance.
 
         Column names in the cursor description are matched to entity fields
@@ -781,7 +779,7 @@ class QuerySet[T: Entity]:
         col_map = _build_column_map_from_names(self._entity_class, col_names)
         return [self._map_raw_row(row, col_map) for row in rows]
 
-    def raw_one(self, sql: str, params: list[Any] | None = None) -> T | None:
+    def raw_one(self, sql: str, params: list[Any] | None = None) -> ET | None:
         """Execute *sql* and return the first mapped entity, or ``None``.
 
         Behaves like :meth:`raw` but returns at most one result.  The SQL
@@ -821,9 +819,9 @@ class QuerySet[T: Entity]:
             for_update_nowait=self._for_update_nowait,
         )
 
-    def _map_raw_row(self, row: tuple[Any, ...], col_map: list[str | None]) -> T:
+    def _map_raw_row(self, row: tuple[Any, ...], col_map: list[str | None]) -> ET:
         """Hydrate *row* using an explicit *col_map* (no identity-map caching)."""
-        obj: T = object.__new__(self._entity_class)
+        obj: ET = object.__new__(self._entity_class)
         vars(obj)["_db_"] = self._db
         for field_name, value in zip(col_map, row, strict=False):
             if field_name is None:
@@ -838,7 +836,7 @@ class QuerySet[T: Entity]:
         obj.after_load()
         return obj
 
-    def _map_row(self, row: tuple[Any, ...]) -> T:
+    def _map_row(self, row: tuple[Any, ...]) -> ET:
         """Convert a raw DB row-tuple to an entity instance.
 
         - Non-relation columns are set via ``setattr``.
@@ -871,7 +869,7 @@ class QuerySet[T: Entity]:
                 if cached is not None:
                     return cached  # type: ignore[return-value]
 
-        obj: T = object.__new__(entity_cls)
+        obj: ET = object.__new__(entity_cls)
         vars(obj)["_db_"] = self._db
         for field_name, value in zip(self._column_map, row, strict=False):
             if field_name is None:  # pragma: no cover
@@ -910,7 +908,7 @@ class QuerySet[T: Entity]:
 
         return obj
 
-    def _do_prefetch(self, results: list[T]) -> None:
+    def _do_prefetch(self, results: list[ET]) -> None:
         """Execute prefetch queries and attach results to *results*."""
         if not results:
             return
@@ -922,7 +920,7 @@ class QuerySet[T: Entity]:
         from nextorm.database import _get_pk_val  # noqa: PLC0415
 
         owner_pks = [_get_pk_val(obj) for obj in results]
-        owner_by_pk: dict[Any, T] = {
+        owner_by_pk: dict[Any, ET] = {
             _get_pk_val(obj): obj for obj in results if _get_pk_val(obj) is not None
         }
 

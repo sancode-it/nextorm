@@ -24,7 +24,7 @@ from __future__ import annotations
 import contextlib
 import time
 import typing
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import nextorm.providers  # noqa: F401  # pyright: ignore[reportUnusedImport]
 from nextorm.debug import QueryStat, _global_stats_lock, _print_sql, global_stats
@@ -50,7 +50,6 @@ if TYPE_CHECKING:
 
 __all__ = ["Database"]
 
-T = TypeVar("T", bound=Entity)
 
 # ---------------------------------------------------------------------------
 # Global database registry
@@ -518,7 +517,7 @@ class Database:
     # Query API
     # ------------------------------------------------------------------
 
-    def select(self, entity_class: type[T]) -> QuerySet[T]:
+    def select[ET: Entity](self, entity_class: type[ET]) -> QuerySet[ET]:
         """Return a :class:`~nextorm.query.QuerySet` for *entity_class*.
 
         :meth:`generate_mapping` must have been called first.
@@ -536,7 +535,7 @@ class Database:
         from nextorm.query import QuerySet as _QuerySet  # noqa: PLC0415
         from nextorm.sql.nodes import BinOp, ColumnRef, Param  # noqa: PLC0415
 
-        qs: QuerySet[T] = _QuerySet(entity_class, table, self, self._builder)
+        qs: QuerySet[ET] = _QuerySet(entity_class, table, self, self._builder)
         # STI: automatically filter by discriminator value for child entities
         disc_val = entity_class._discriminator_val_
         if disc_val is not None and entity_class._sti_parent_ is not None:
