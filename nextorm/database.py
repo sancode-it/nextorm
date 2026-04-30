@@ -30,7 +30,9 @@ import nextorm.providers  # noqa: F401  # pyright: ignore[reportUnusedImport]
 from nextorm.debug import QueryStat, _global_stats_lock, _print_sql, global_stats
 from nextorm.entity import Entity, EntityMeta, _entity_registry
 from nextorm.exceptions import MappingError, OptimisticCheckError
-from nextorm.fields import RelationKind, _generate_ulid, _generate_uuid7, _serialize_value
+from nextorm.fields import (
+    OptAttrValue,
+)
 from nextorm.pool import ConnectionPool
 from nextorm.providers.base import (
     _PROVIDER_REGISTRY,
@@ -851,7 +853,7 @@ class Database:
             self._local_stats[sql] = QueryStat()
         self._local_stats[sql]._record(elapsed)
 
-    def _load_lazy_field(self, entity: Entity, field_name: str) -> Any:
+    def _load_lazy_field(self, entity: Entity, field_name: str) -> OptAttrValue:
         """Execute a per-field SELECT to load a single lazy field value.
 
         Called automatically by :class:`~nextorm.entity.FieldDescriptor` when

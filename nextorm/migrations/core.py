@@ -31,6 +31,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from nextorm.fields import AttrValue
+
 if TYPE_CHECKING:
     from nextorm.database import Database
 
@@ -258,7 +260,8 @@ def makemigrations(
             t.columns.append(
                 Column(
                     name=col_data["name"],
-                    py_type=object,  # sentinel: type not stored in snapshot
+                    # sentinel: type not stored in snapshot
+                    py_type=cast("type[AttrValue]", object),
                     nullable=col_data.get("nullable", False),
                     primary_key=col_data.get("primary_key", False),
                     unique=col_data.get("unique", False),

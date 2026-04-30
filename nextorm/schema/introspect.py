@@ -14,6 +14,9 @@ objects in the target schema — their equivalent constraints are encoded in the
 
 from __future__ import annotations
 
+from typing import cast
+
+from nextorm.fields import AttrValue
 from nextorm.providers.base import SyncConnection
 from nextorm.schema.core import Column, Index, Table
 
@@ -53,7 +56,7 @@ def introspect_sqlite(conn: SyncConnection) -> dict[str, Table]:
         columns = [
             Column(
                 name=row[1],
-                py_type=object,
+                py_type=cast("type[AttrValue]", object),
                 nullable=not row[3] and not bool(row[5]),  # PK implies NOT NULL
                 primary_key=bool(row[5]),
             )
@@ -136,7 +139,7 @@ def introspect_postgres(conn: SyncConnection) -> dict[str, Table]:
         columns = [
             Column(
                 name=row[0],
-                py_type=object,
+                py_type=cast("type[AttrValue]", object),
                 nullable=(row[1] == "YES"),
             )
             for row in cur.fetchall()
@@ -232,7 +235,7 @@ def introspect_mariadb(conn: SyncConnection) -> dict[str, Table]:
         columns = [
             Column(
                 name=row[0],
-                py_type=object,
+                py_type=cast("type[AttrValue]", object),
                 nullable=(row[1] == "YES"),
             )
             for row in cur.fetchall()

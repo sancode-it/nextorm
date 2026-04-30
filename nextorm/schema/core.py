@@ -7,6 +7,9 @@ translate them to concrete SQL.
 
 import dataclasses
 from typing import Any
+from uuid import UUID
+
+from nextorm.fields import AttrValue
 
 __all__ = ["Column", "ForeignKey", "Index", "Table"]
 
@@ -16,7 +19,7 @@ class Column:
     """A single table column."""
 
     name: str
-    py_type: type[Any]
+    py_type: type[AttrValue | UUID]
     nullable: bool = False
     primary_key: bool = False
     auto_increment: bool = False
