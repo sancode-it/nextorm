@@ -359,9 +359,7 @@ async def test_async_delete_qs() -> None:
         await db.asave(AsyncUser(name="keep", age=3))
 
         count = (
-            await db.aselect(AsyncUser)
-            .filter(BinOp(ColumnRef("age"), "<", Param(value=3)))
-            .delete()
+            await db.aselect(AsyncUser).filter(BinOp(ColumnRef("age"), "<", Param(value=3))).delete()
         )
         assert count == 2
         assert await db.aselect(AsyncUser).count() == 1

@@ -91,9 +91,7 @@ class EntityProxy:
         return _CE(name, object.__getattribute__(self, "_table_name"))
 
 
-def _build_column_map_from_names(
-    entity_cls: type[Entity], col_names: list[str]
-) -> list[str | None]:
+def _build_column_map_from_names(entity_cls: type[Entity], col_names: list[str]) -> list[str | None]:
     """Build a column-index → entity-field-name map from cursor description names.
 
     Used by :meth:`QuerySet.raw` to match raw-SQL result columns to entity
@@ -735,9 +733,7 @@ class QuerySet[T: Entity]:
             print("(no results)", file=out)
             return
         # Build raw string cells
-        rows: list[list[str]] = [
-            [str(getattr(r, name, "")) for name in field_names] for r in results
-        ]
+        rows: list[list[str]] = [[str(getattr(r, name, "")) for name in field_names] for r in results]
         # Natural per-column widths
         col_widths = [
             max(len(h), max((len(row[i]) for row in rows), default=0))
@@ -752,17 +748,13 @@ class QuerySet[T: Entity]:
             rows = [[cell[:cw] for cell, cw in zip(row, col_widths, strict=False)] for row in rows]
         sep = "+" + "+".join("-" * (w + 2) for w in col_widths) + "+"
         hdr = (
-            "|"
-            + "|".join(f" {h:<{w}} " for h, w in zip(field_names, col_widths, strict=False))
-            + "|"
+            "|" + "|".join(f" {h:<{w}} " for h, w in zip(field_names, col_widths, strict=False)) + "|"
         )
         print(sep, file=out)
         print(hdr, file=out)
         print(sep, file=out)
         for row in rows:
-            line = (
-                "|" + "|".join(f" {c:<{w}} " for c, w in zip(row, col_widths, strict=False)) + "|"
-            )
+            line = "|" + "|".join(f" {c:<{w}} " for c, w in zip(row, col_widths, strict=False)) + "|"
             print(line, file=out)
         print(sep, file=out)
 

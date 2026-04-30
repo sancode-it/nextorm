@@ -169,9 +169,7 @@ class SessionCache:
     # M2M collection tracking
     # ------------------------------------------------------------------
 
-    def track_collection_change(
-        self, owner: Entity, attr: str, action: str, related: Entity
-    ) -> None:
+    def track_collection_change(self, owner: Entity, attr: str, action: str, related: Entity) -> None:
         """Record that *related* was added to or removed from *owner*.*attr*.
 
         Parameters
@@ -518,9 +516,7 @@ class DBSessionManager:
                     else list(self._allowed_exceptions)
                 ),
                 retry_exceptions=(
-                    retry_exceptions
-                    if retry_exceptions is not None
-                    else list(self._retry_exceptions)
+                    retry_exceptions if retry_exceptions is not None else list(self._retry_exceptions)
                 ),
             )
         # Bare ``@db_session`` / ``@db_session()`` with a callable → wrap it

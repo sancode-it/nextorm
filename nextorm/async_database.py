@@ -1166,9 +1166,7 @@ class AsyncQuerySet[T: Entity]:
         if not results:
             print("(no results)", file=out)
             return
-        rows: list[list[str]] = [
-            [str(getattr(r, name, "")) for name in field_names] for r in results
-        ]
+        rows: list[list[str]] = [[str(getattr(r, name, "")) for name in field_names] for r in results]
         col_widths = [
             max(len(h), max((len(row[i]) for row in rows), default=0))
             for i, h in enumerate(field_names)
@@ -1180,17 +1178,13 @@ class AsyncQuerySet[T: Entity]:
             rows = [[cell[:cw] for cell, cw in zip(row, col_widths, strict=False)] for row in rows]
         sep = "+" + "+".join("-" * (w + 2) for w in col_widths) + "+"
         hdr = (
-            "|"
-            + "|".join(f" {h:<{w}} " for h, w in zip(field_names, col_widths, strict=False))
-            + "|"
+            "|" + "|".join(f" {h:<{w}} " for h, w in zip(field_names, col_widths, strict=False)) + "|"
         )
         print(sep, file=out)
         print(hdr, file=out)
         print(sep, file=out)
         for row in rows:
-            line = (
-                "|" + "|".join(f" {c:<{w}} " for c, w in zip(row, col_widths, strict=False)) + "|"
-            )
+            line = "|" + "|".join(f" {c:<{w}} " for c, w in zip(row, col_widths, strict=False)) + "|"
             print(line, file=out)
         print(sep, file=out)
 

@@ -251,9 +251,7 @@ def commit() -> None:
                 _db._rollback_transaction()
             except Exception as re:
                 rollback_exceptions.append(re)
-        raise CommitException(
-            str(primary_exc), [primary_exc, *rollback_exceptions]
-        ) from primary_exc
+        raise CommitException(str(primary_exc), [primary_exc, *rollback_exceptions]) from primary_exc
 
     # Step 3 — commit secondaries; primary's work is already durable.
     secondary_exceptions: list[Exception] = []

@@ -331,8 +331,7 @@ def get_sync_provider(name: str) -> type[SyncProvider]:
     if entry is None or entry[0] is None:
         available = [k for k, v in _PROVIDER_REGISTRY.items() if v[0] is not None]
         raise ValueError(
-            f"No sync provider registered for {name!r}. "
-            f"Available sync providers: {sorted(available)}"
+            f"No sync provider registered for {name!r}. Available sync providers: {sorted(available)}"
         )
     return entry[0]
 

@@ -355,9 +355,7 @@ class RelatedCollection[T: "Entity"]:
                 None,
             )
             if back_ref is None:
-                raise RuntimeError(
-                    f"Cannot add to {self._ri.name}: no Single back-reference found."
-                )
+                raise RuntimeError(f"Cannot add to {self._ri.name}: no Single back-reference found.")
             for item in items:
                 setattr(item, back_ref.name, self._owner)
                 db.save(item)

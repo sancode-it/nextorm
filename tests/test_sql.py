@@ -236,8 +236,7 @@ def test_case_simple() -> None:
         else_=Literal("unknown"),
     )
     assert (
-        sql(node)
-        == "CASE status WHEN 'A' THEN 'active' WHEN 'I' THEN 'inactive' ELSE 'unknown' END"
+        sql(node) == "CASE status WHEN 'A' THEN 'active' WHEN 'I' THEN 'inactive' ELSE 'unknown' END"
     )
 
 
@@ -393,9 +392,7 @@ def test_select_inner_join() -> None:
         columns=(Star(),),
         from_table="order",
         from_alias="o",
-        joins=(
-            ("INNER", "user", "u", BinOp(ColumnRef("id", "u"), "=", ColumnRef("user_id", "o"))),
-        ),
+        joins=(("INNER", "user", "u", BinOp(ColumnRef("id", "u"), "=", ColumnRef("user_id", "o"))),),
     )
     assert sql(node) == "SELECT * FROM order AS o INNER JOIN user AS u ON u.id = o.user_id"
 

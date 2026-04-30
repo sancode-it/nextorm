@@ -756,9 +756,7 @@ def test_load_db_missing_attr_exits(tmp_path: Path, capsys: pytest.CaptureFixtur
     assert "ERROR" in captured.err
 
 
-def test_makemigrations_cli_creates_file(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_makemigrations_cli_creates_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """CLI makemigrations command prints 'Created migration:' on success."""
     import sys  # noqa: PLC0415
 

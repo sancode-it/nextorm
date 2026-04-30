@@ -297,9 +297,7 @@ def test_sync_execute_ddl_creates_table() -> None:
     conn = p.connect(POSTGRES_DSN)
     _drop_tables(conn, "pg_test_ddl")
     try:
-        stmts = [
-            "CREATE TABLE IF NOT EXISTS pg_test_ddl (id SERIAL PRIMARY KEY, name TEXT NOT NULL)"
-        ]
+        stmts = ["CREATE TABLE IF NOT EXISTS pg_test_ddl (id SERIAL PRIMARY KEY, name TEXT NOT NULL)"]
         p.execute_ddl(conn, stmts)
         conn.commit()
         cur = conn.cursor()

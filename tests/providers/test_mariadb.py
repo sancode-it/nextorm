@@ -659,8 +659,7 @@ def test_async_execute_ddl_creates_table() -> None:
         conn = await p.connect(**MARIADB_CONNECT_KWARGS)
         try:
             stmts = [
-                "CREATE TABLE IF NOT EXISTS my_async_ddl "
-                "(id INT AUTO_INCREMENT PRIMARY KEY, v TEXT)"
+                "CREATE TABLE IF NOT EXISTS my_async_ddl (id INT AUTO_INCREMENT PRIMARY KEY, v TEXT)"
             ]
             await p.execute_ddl(conn, stmts)
             cur = await conn.cursor()

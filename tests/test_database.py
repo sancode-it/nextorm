@@ -937,9 +937,7 @@ def test_lazy_field_map_raw_row_stamps_sentinel() -> None:
         item = _LazyEntity(label="raw-test")
         item.notes = "raw notes"
 
-    results = db.select(_LazyEntity).raw(
-        "SELECT id, label FROM _lazyentity WHERE id = ?", [item.id]
-    )
+    results = db.select(_LazyEntity).raw("SELECT id, label FROM _lazyentity WHERE id = ?", [item.id])
     assert len(results) == 1
     assert vars(results[0])["_field_notes"] is _LAZY_SENTINEL
     db.close()

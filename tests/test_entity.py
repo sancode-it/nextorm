@@ -554,9 +554,7 @@ class TestToDict:
             c = Comment(body="great book")
             c.product = p
         # Prefetch the comments before calling to_dict
-        result = (
-            db.select(Product).prefetch(Product.comments).filter(Product.id == p.id).fetch_one()
-        )
+        result = db.select(Product).prefetch(Product.comments).filter(Product.id == p.id).fetch_one()
         assert result is not None
         d = result.to_dict(with_collections=True)
         assert "comments" in d

@@ -568,9 +568,7 @@ class Database:
         # Use _dbvals_ presence to distinguish new (not-yet-inserted) from existing.
         # We cannot use _db_ because Entity.__init__ sets _db_ immediately when
         # created inside a db_session (before the first actual DB write).
-        is_new = pk_val is None or (
-            entity_cls._pk_field_ is None and "_dbvals_" not in vars(entity)
-        )
+        is_new = pk_val is None or (entity_cls._pk_field_ is None and "_dbvals_" not in vars(entity))
         try:
             if is_new:
                 entity.before_insert()

@@ -298,9 +298,7 @@ class PostgresRenderer(DDLRenderer):
     def alter_column_type(self, table_name: str, column: Column) -> str:
         new_type = self.sql_type(column)
         nullable_clause = "" if column.nullable else " NOT NULL"
-        return (
-            f"ALTER TABLE {table_name} ALTER COLUMN {column.name} TYPE {new_type}{nullable_clause}"
-        )
+        return f"ALTER TABLE {table_name} ALTER COLUMN {column.name} TYPE {new_type}{nullable_clause}"
 
     def create_index(self, table_name: str, index: Index) -> str:
         unique = "UNIQUE " if index.unique else ""
