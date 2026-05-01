@@ -695,15 +695,20 @@ class AsyncDatabase:
                 else:  # "ulid"
                     setattr(entity, fi.name, _generate_ulid())
         # Exclude auto-PK from column list unless include_auto_pk=True AND it has a value.
-        cols_and_vals: list[tuple[str, Any]] = [
-            (fi.spec.column or fi.name, _serialize_value(getattr(entity, fi.name)))
-            for fi in entity_cls._fields_.values()
-            if not (
+        cols_and_vals: list[tuple[str, Any]] = []
+        for fi in entity_cls._fields_.values():
+            if (
                 fi.spec.primary_key
                 and fi.spec.auto
                 and (not include_auto_pk or getattr(entity, fi.name) is None)
-            )
-        ]
+            ):
+                continue
+            val = getattr(entity, fi.name)
+            # If field is str or LongStr and not nullable, None → ""
+            if val is None and issubclass(fi.py_type, str) and not fi.spec.nullable:
+                val = ""
+            cols_and_vals.append((fi.spec.column or fi.name, _serialize_value(val)))
+        # Also persist FK values from Single relations (owning side)
         for ri in entity_cls._relations_.values():
             if ri.spec.kind == RelationKind.SINGLE:
                 fk_col = ri.spec.column or f"{ri.name}_id"
