@@ -62,7 +62,7 @@ from nextorm.providers import (
     registered_providers,
 )
 from nextorm.query import EntityProxy, QuerySet
-from nextorm.session import SessionCache, async_db_session, db_session
+from nextorm.session import SessionCache, db_session
 from nextorm.sql import (
     Alias,
     BinOp,
@@ -118,7 +118,6 @@ __all__ = [
     "AsyncQuerySet",
     "SessionCache",
     "db_session",
-    "async_db_session",
     # Generators
     "select",
     "DecompileError",

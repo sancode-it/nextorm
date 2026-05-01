@@ -4,9 +4,6 @@ Session
 .. autodata:: nextorm.session.db_session
    :annotation: = DBSessionManager instance
 
-.. autodata:: nextorm.session.async_db_session
-   :annotation: = alias for db_session
-
 .. autoclass:: nextorm.session.DBSessionManager
    :members:
    :undoc-members: False

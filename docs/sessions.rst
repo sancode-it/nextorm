@@ -152,12 +152,9 @@ Session depth and introspection
 Async sessions
 --------------
 
-:func:`~nextorm.session.async_db_session` is an alias for :func:`~nextorm.session.db_session`
-that signals async usage; both are the same object:
-
 .. code-block:: python
 
-   from nextorm import db_session   # or async_db_session
+   from nextorm import db_session
 
    async with db_session:
        await db.asave(User(name="alice"))

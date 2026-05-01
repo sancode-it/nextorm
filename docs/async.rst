@@ -114,8 +114,7 @@ Just like the sync API, you can skip the explicit ``db`` reference:
 Async sessions
 --------------
 
-:func:`~nextorm.session.db_session` (and its alias ``async_db_session``) works
-as an async context manager and decorator:
+:func:`~nextorm.session.db_session` works as an async context manager and decorator:
 
 .. code-block:: python
 

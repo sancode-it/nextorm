@@ -1,4 +1,4 @@
-"""Tests for nextorm.session — SessionCache, db_session, async_db_session."""
+"""Tests for nextorm.session — SessionCache, db_session."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from nextorm.fields import Req
 from nextorm.session import (
     DBSessionManager,
     SessionCache,
-    async_db_session,
     db_session,
     get_current_session,
 )
@@ -307,24 +306,15 @@ def test_db_session_async_decorator_wraps_name() -> None:
     assert my_async_func.__name__ == "my_async_func"
 
 
-# ---------------------------------------------------------------------------
-# db_session — async context manager
-# ---------------------------------------------------------------------------
-
-
 def test_async_db_session_context_manager() -> None:
     async def _run() -> SessionCache:
-        async with async_db_session as cache:
+        async with db_session as cache:
             assert isinstance(cache, SessionCache)
             return cache
 
     cache = asyncio.run(_run())
     # After exit, cache is cleared
     assert cache.get((Person, 1)) is None
-
-
-def test_async_db_session_is_same_object() -> None:
-    assert async_db_session is db_session
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +357,7 @@ def test_async_db_session_clears_on_exception() -> None:
 
     async def _run() -> None:
         with pytest.raises(ValueError, match="async boom"):
-            async with async_db_session as cache:
+            async with db_session as cache:
                 cache_ref.append(cache)
                 raise ValueError("async boom")
 

@@ -9,9 +9,9 @@ Usage (synchronous)::
 
 Usage (async)::
 
-    from nextorm.session import async_db_session
+    from nextorm.session import db_session
 
-    async with async_db_session:
+    async with db_session:
         ...
 
 Usage as a decorator::
@@ -20,7 +20,7 @@ Usage as a decorator::
     def my_view(): ...
 
 
-    @async_db_session
+    @db_session
     async def my_async_view(): ...
 
 Parametrised form::
@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 from nextorm.entity import Entity
 from nextorm.exceptions import TransactionError
 
-__all__ = ["SessionCache", "db_session", "async_db_session"]
+__all__ = ["SessionCache", "db_session"]
 
 
 def _collect_dbs(cache: SessionCache | None) -> list[Any]:
@@ -681,7 +681,3 @@ class DBSessionManager:
 
 
 db_session: DBSessionManager = DBSessionManager()
-
-#: Convenience alias — behaves identically to :data:`db_session` but signals
-#: async intent to readers of the calling code.
-async_db_session: DBSessionManager = db_session
