@@ -289,6 +289,8 @@ Special column types
      - Timezone-aware datetime (``TIMESTAMPTZ`` on PostgreSQL)
    * - ``Vec[n]``
      - Fixed-dimension vector (pgvector on PostgreSQL)
+   * - ``uuid7``, ``uuid4``, ``ulid``
+     - Auto-generated UUID/ULID primary keys (see above)
 
 .. code-block:: python
 
