@@ -116,7 +116,8 @@ def entity_to_table(
         # Skip non-owning back-ref side of a one-to-one pair
         if non_owning_singles and (table_name, ri.name) in non_owning_singles:
             continue
-        col_name = ri.spec.column or f"{ri.name}_id"
+        # Support columns (composite FK) or column (single FK)
+        col_names = ri.spec.columns if ri.spec.columns else [ri.spec.column or f"{ri.name}_id"]
         ref_table = _target_table_name(ri.spec.target)
         nullable: bool = ri.spec.nullable
         # Derive ON DELETE action: explicit override > nullability default
@@ -130,23 +131,25 @@ def entity_to_table(
         unique = is_one_to_one is not None and (table_name, ri.name) in is_one_to_one
         # If this relation is part of the composite PK, mark the FK column as primary_key
         is_pk_part = ri.name in pk_rel_names
-        fk_col = Column(
-            name=col_name,
-            py_type=int,
-            nullable=nullable,
-            unique=unique,
-            primary_key=is_pk_part,
-        )
-        table.columns.append(fk_col)
-        table.foreign_keys.append(
-            ForeignKey(
-                name=f"fk_{table_name}__{col_name}",
-                column=col_name,
-                ref_table=ref_table,
-                ref_column="id",
-                on_delete=on_delete,
+        for col_name in col_names:
+            fk_col = Column(
+                name=col_name,
+                py_type=int,
+                nullable=nullable,
+                unique=unique,
+                primary_key=is_pk_part,
             )
-        )
+            table.columns.append(fk_col)
+            fk_name = ri.spec.fk_name or f"fk_{table_name}__{col_name}"
+            table.foreign_keys.append(
+                ForeignKey(
+                    name=fk_name,
+                    column=col_name,
+                    ref_table=ref_table,
+                    ref_column="id",
+                    on_delete=on_delete,
+                )
+            )
 
     # Composite key/index constraints declared with composite_key() / composite_index()
     for constraint in entity_cls._constraints_:
@@ -340,8 +343,25 @@ def build_schema(entities: list[type[Entity]]) -> dict[str, Table]:
             seen.add(m2m_pair)
             # Allow explicit join table name via RelationSpec.table
             join_name = ri.spec.table or "_".join(sorted(m2m_pair))
-            col_a = f"{table_a}_id"
-            col_b = f"{table_b}_id"
+            # Use reverse/reverse_column/reverse_columns if present for join columns
+            # Prefer explicit columns, else default to <table>_id
+            col_a = None
+            col_b = None
+            # ri is the Set on entity_cls (table_a)
+            if getattr(ri.spec, "reverse_column", None):
+                col_b = ri.spec.reverse_column
+            elif getattr(ri.spec, "reverse_columns", None):
+                rcols = ri.spec.reverse_columns
+                col_b = rcols[0] if isinstance(rcols, (list, tuple)) and rcols else None
+            if getattr(ri.spec, "column", None):
+                col_a = ri.spec.column
+            elif getattr(ri.spec, "columns", None):
+                cols = ri.spec.columns
+                col_a = cols[0] if isinstance(cols, (list, tuple)) and cols else None
+            if not col_a:
+                col_a = f"{table_a}_id"
+            if not col_b:
+                col_b = f"{table_b}_id"
             tables[join_name] = Table(
                 name=join_name,
                 columns=[

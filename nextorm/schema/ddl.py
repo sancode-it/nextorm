@@ -109,24 +109,29 @@ class SQLiteRenderer(DDLRenderer):
     """DDL renderer for SQLite (≥ 3.35 for ``DROP COLUMN`` support)."""
 
     def sql_type(self, column: Column) -> str:
+        py_type = column.py_type
+        # Map uuid4, uuid7, ulid to canonical types for DDL
+        import nextorm.fields as _fields
+
+        if py_type in (_fields.uuid4, _fields.uuid7):
+            py_type = uuid.UUID
+        elif py_type is _fields.ulid:
+            py_type = _fields.ULID
         if column.sql_type_override is not None:
             return column.sql_type_override
-        if column.py_type is int and column.size is not None:
-            # SQLite always uses INTEGER regardless of requested bit width
+        if py_type is int and column.size is not None:
             return "INTEGER"
         if column.max_len is not None:
             return f"VARCHAR({column.max_len})"
-        if column.py_type is decimal.Decimal and (
-            column.precision is not None or column.scale is not None
-        ):
+        if py_type is decimal.Decimal and (column.precision is not None or column.scale is not None):
             p = column.precision if column.precision is not None else 10
             s = column.scale if column.scale is not None else 0
             return f"NUMERIC({p}, {s})"
-        if column.py_type is Vec:
-            return "TEXT"  # SQLite has no native vector type; store as JSON TEXT
-        if issubclass(column.py_type, enum.Enum):
+        if py_type is Vec:
             return "TEXT"
-        return _PY_TO_SQLITE.get(column.py_type, "TEXT")
+        if issubclass(py_type, enum.Enum):
+            return "TEXT"
+        return _PY_TO_SQLITE.get(py_type, "TEXT")
 
     def _column_def(self, column: Column, *, table_pk: bool = False) -> str:
         """Render one column definition.
@@ -233,30 +238,34 @@ class PostgresRenderer(DDLRenderer):
     """DDL renderer for PostgreSQL (≥ 12)."""
 
     def sql_type(self, column: Column) -> str:
+        py_type = column.py_type
+        import nextorm.fields as _fields
+
+        if py_type in (_fields.uuid4, _fields.uuid7):
+            py_type = uuid.UUID
+        elif py_type is _fields.ulid:
+            py_type = _fields.ULID
         if column.sql_type_override is not None:
             return column.sql_type_override
         if column.primary_key and column.auto_increment:
-            # SERIAL covers the auto-increment; type is implicit
-            return "SERIAL" if column.py_type is int else "BIGSERIAL"
-        if column.py_type is int and column.size is not None:
+            return "SERIAL" if py_type is int else "BIGSERIAL"
+        if py_type is int and column.size is not None:
             return _INT_SIZE_POSTGRES.get(column.size, "INTEGER")
         if column.max_len is not None:
             return f"VARCHAR({column.max_len})"
-        if column.py_type is decimal.Decimal and (
-            column.precision is not None or column.scale is not None
-        ):
+        if py_type is decimal.Decimal and (column.precision is not None or column.scale is not None):
             p = column.precision if column.precision is not None else 10
             s = column.scale if column.scale is not None else 0
             return f"NUMERIC({p}, {s})"
-        if column.py_type is Vec:
+        if py_type is Vec:
             dims = column.dimensions
             if dims is not None:
-                return f"vector({dims})"  # requires pgvector extension
+                return f"vector({dims})"
             return "TEXT"
-        if issubclass(column.py_type, enum.Enum):
-            vals = ", ".join(f"'{m.value}'" for m in column.py_type)
+        if issubclass(py_type, enum.Enum):
+            vals = ", ".join(f"'{m.value}'" for m in py_type)
             return f"TEXT CHECK ({column.name} IN ({vals}))"
-        return _PY_TO_POSTGRES.get(column.py_type, "TEXT")
+        return _PY_TO_POSTGRES.get(py_type, "TEXT")
 
     def _column_def(self, column: Column, *, table_pk: bool = False) -> str:
         parts = [column.name, self.sql_type(column)]
@@ -346,29 +355,34 @@ class MariaDBRenderer(DDLRenderer):
     """DDL renderer for MariaDB (also compatible with MySQL)."""
 
     def sql_type(self, column: Column) -> str:
+        py_type = column.py_type
+        import nextorm.fields as _fields
+
+        if py_type in (_fields.uuid4, _fields.uuid7):
+            py_type = uuid.UUID
+        elif py_type is _fields.ulid:
+            py_type = _fields.ULID
         if column.sql_type_override is not None:
             return column.sql_type_override
-        if column.py_type is int and column.size is not None:
+        if py_type is int and column.size is not None:
             base = _INT_SIZE_MARIADB.get(column.size, "INT")
             return f"{base} UNSIGNED" if column.unsigned else base
         if column.max_len is not None:
             return f"VARCHAR({column.max_len})"
-        if column.py_type is decimal.Decimal and (
-            column.precision is not None or column.scale is not None
-        ):
+        if py_type is decimal.Decimal and (column.precision is not None or column.scale is not None):
             p = column.precision if column.precision is not None else 10
             s = column.scale if column.scale is not None else 0
             return f"DECIMAL({p}, {s})"
-        if column.py_type is Vec:
+        if py_type is Vec:
             dims = column.dimensions
             if dims is not None:
-                return f"VECTOR({dims})"  # MariaDB 11.7+ native vector type
+                return f"VECTOR({dims})"
             return "TEXT"
-        if issubclass(column.py_type, enum.Enum):
-            vals = ", ".join(f"'{m.value}'" for m in column.py_type)
+        if issubclass(py_type, enum.Enum):
+            vals = ", ".join(f"'{m.value}'" for m in py_type)
             return f"ENUM({vals})"
-        base = _PY_TO_MARIADB.get(column.py_type, "TEXT")
-        if column.unsigned and column.py_type is int:
+        base = _PY_TO_MARIADB.get(py_type, "TEXT")
+        if column.unsigned and py_type is int:
             return f"{base} UNSIGNED"
         return base
 
