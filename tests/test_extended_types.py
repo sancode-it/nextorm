@@ -200,7 +200,7 @@ class _VecArticle512(Entity):
 
 
 class _VecArticleFieldSpec(Entity):
-    embedding: Req[Vec] = FieldSpec(dimensions=1536)  # type: ignore[assignment]
+    embedding: Req[Vec] = Req(dimensions=1536)
 
 
 class _VecArticleUnsubscripted(Entity):
@@ -341,7 +341,7 @@ class TestEnumEntityInsert:
         with db_session:
             task = TaskEntity(title="coerce", status=TaskStatus.DONE)
             # Assign a different Enum subclass whose .value matches a TaskStatus member
-        task.status = AltStatus.TODO  # type: ignore[assignment]
+        task.status = AltStatus.TODO
         assert task.status is TaskStatus.TODO
         db.close()
 
@@ -425,7 +425,7 @@ class _LongStrBlogPost(Entity):
 
 class _LongStrBlogPostEager(Entity):
     title: Req[str]
-    body: Req[_LongStr] = FieldSpec(lazy=False)  # type: ignore[assignment]
+    body: Req[_LongStr] = Req(lazy=False)
 
 
 class TestLongStrLazy:

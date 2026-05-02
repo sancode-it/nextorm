@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+import typing
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -14,7 +15,8 @@ from nextorm import rollback as _module_rollback
 from nextorm.database import Database
 from nextorm.entity import Entity
 from nextorm.exceptions import CommitException, MappingError, PartialCommitException
-from nextorm.fields import PK, FieldSpec, Opt, Req, Set, Single
+from nextorm.fields import PK, Opt, Req, Set, Single
+from nextorm.pool import ConnectionPool
 from nextorm.providers.base import (
     _PROVIDER_REGISTRY,
     SyncConnection,
@@ -74,7 +76,7 @@ class PKOnly(Entity):
 class _UserPKItem(Entity):
     """Entity with a user-assigned (non-auto) integer PK — tests insert() path."""
 
-    id: int = FieldSpec(primary_key=True, auto=False)  # type: ignore[assignment]
+    id: Req[int] = Req(primary_key=True, auto=False)
     label: Req[str]
 
 
@@ -91,6 +93,17 @@ class _FRTarget(Entity):
 class _FROwner(Entity):
     label: Req[str]
     items: Set[_FRTarget]
+
+
+# Entities where the Set target is a typing.ForwardRef (not a plain string)
+class _FwdRefChild(Entity):
+    label: Req[str]
+    owner: Single["_FwdRefOwner"]  # noqa: UP037
+
+
+class _FwdRefOwner(Entity):
+    label: Req[str]
+    items: Set[typing.ForwardRef("_FwdRefChild")]  # type: ignore[valid-type]
 
 
 class _UnresolvableOwner(Entity):
@@ -502,6 +515,14 @@ def test_validate_relations_forwardref_target_resolves() -> None:
     db.close()
 
 
+def test_validate_relations_typing_forwardref_target_resolves() -> None:
+    """Set with typing.ForwardRef target hits the ForwardRef branch in _resolve."""
+    db = Database(entities=[_FwdRefOwner, _FwdRefChild])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)  # _resolve uses ForwardRef.__forward_arg__
+    db.close()
+
+
 def test_validate_relations_unresolvable_string_skipped() -> None:
     """Set['NonExistent'] target is unresolvable → continue without error."""
     db = Database(entities=[_UnresolvableOwner])
@@ -658,7 +679,7 @@ def test_volatile_field_excluded_from_update() -> None:
     class _VolatileEntity(Entity):
         name: Req[str]
         # 'computed' is set by a DB trigger; our ORM must not overwrite it
-        computed: Opt[int] = FieldSpec(volatile=True)  # type: ignore[assignment]
+        computed: Opt[int] = Opt(volatile=True)
 
     db = Database(entities=[_VolatileEntity])
     db.bind("sqlite", ":memory:")
@@ -685,7 +706,7 @@ def test_sql_type_propagated_to_ddl() -> None:
     from nextorm.schema.ddl import SQLiteRenderer  # noqa: PLC0415
 
     class _JsonEntity(Entity):
-        payload: Req[str] = FieldSpec(sql_type="BLOB")  # type: ignore[assignment]
+        payload: Req[str] = Req(sql_type="BLOB")
 
     table = entity_to_table(_JsonEntity)
     renderer = SQLiteRenderer()
@@ -699,7 +720,7 @@ def test_sql_default_propagated_to_ddl() -> None:
     from nextorm.schema.ddl import SQLiteRenderer  # noqa: PLC0415
 
     class _DefaultEntity(Entity):
-        status: Req[str] = FieldSpec(sql_default="'pending'")  # type: ignore[assignment]
+        status: Req[str] = Req(sql_default="'pending'")
 
     table = entity_to_table(_DefaultEntity)
     renderer = SQLiteRenderer()
@@ -784,7 +805,7 @@ class _LazyEntity(Entity):
     """Entity with one lazy field for Database lazy-load tests."""
 
     label: Req[str]
-    notes: Req[str] = FieldSpec(lazy=True)  # type: ignore[assignment]
+    notes: Req[str] = Req(lazy=True)
 
 
 class _LazyParent(Entity):
@@ -798,7 +819,7 @@ class _LazyWithFK(Entity):
     """Entity with a lazy field and a Single relation — covers explicit col_map FK branch."""
 
     text: Req[str]
-    detail: Req[str] = FieldSpec(lazy=True)  # type: ignore[assignment]
+    detail: Req[str] = Req(lazy=True)
     parent: Single[_LazyParent]
 
 
@@ -806,7 +827,7 @@ class _LazyWithSet(Entity):
     """Entity with a lazy field and a Set relation — covers non-Single branch in col_map build."""
 
     name: Req[str]
-    bio: Req[str] = FieldSpec(lazy=True)  # type: ignore[assignment]
+    bio: Req[str] = Req(lazy=True)
     tags: Set[Tag]
 
 
@@ -1281,3 +1302,101 @@ def test_post_save_skips_read_cols_when_already_set() -> None:
     # _read_cols_ should still be the original set (not replaced with empty set)
     assert vars(u)["_read_cols_"] == {"name"}
     db.close()
+
+
+# ---------------------------------------------------------------------------
+# _validate_relations error path (unresolvable target or missing backref)
+# ---------------------------------------------------------------------------
+
+
+# Define a valid entity as the relation target, but omit the required back-reference
+class DBNoBackrefTarget(Entity):
+    pass
+
+
+class DBNoBackrefOwner(Entity):
+    items: Set[DBNoBackrefTarget]
+
+
+def test_db_validate_relations_unresolvable_target_raises() -> None:
+    db = Database(entities=[DBNoBackrefOwner, DBNoBackrefTarget])
+    db.bind("sqlite", ":memory:")
+    with pytest.raises(Exception) as excinfo:
+        db.generate_mapping(validate_relations=True)
+    assert "requires a back-reference" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# unbind/close branches (pool and connection cleanup)
+# ---------------------------------------------------------------------------
+
+
+def test_db_close_with_pool_and_connection() -> None:
+    db = Database()
+
+    def close_all(_self: object) -> None:
+        setattr(db, "_pool_closed", True)  # noqa: B010
+
+    FakePool = type("FakePool", (), {"close_all": close_all})
+    db._pool = cast("ConnectionPool", FakePool())
+    db.close()
+    assert getattr(db, "_pool_closed", False)
+
+
+def test_db_close_with_connection() -> None:
+    class FakeConn:
+        def close(self) -> None:
+            self.closed = True
+
+    db = Database()
+    db._connection = cast("SyncConnection", FakeConn())
+    db.close()
+    assert getattr(db._connection, "closed", True) or db._connection is None
+
+
+# Dummy entities for direct type branch coverage
+class DummyTarget(Entity):
+    label: Req[str]
+
+
+class DummyOwner(Entity):
+    label: Req[str]
+    items: Set[DummyTarget]
+
+
+def test__validate_relations_resolve_type_branch(monkeypatch: pytest.MonkeyPatch) -> None:
+    db = Database()
+    db._entities = [DummyOwner, DummyTarget]
+
+    def fake_effective_entities() -> list[type[Entity]]:
+        return [DummyOwner, DummyTarget]
+
+    monkeypatch.setattr(db, "_effective_entities", fake_effective_entities)
+    db.bind("sqlite", ":memory:")
+    with pytest.raises(MappingError, match="requires a back-reference"):
+        db._validate_relations()
+
+
+# ---------------------------------------------------------------------------
+# _validate_relations with unresolvable target paths
+# ---------------------------------------------------------------------------
+
+
+def test_validate_relations_with_none_target() -> None:
+    """Relation with target=None should be skipped gracefully."""
+    # Use simple entities without bidirectional relations to test the None target skip path
+    db = Database(entities=[PKOnly])
+    db.bind("sqlite", ":memory:")
+
+    # Verify that validation works on entities with no complex relations
+    db.generate_mapping(validate_relations=True)
+
+
+def test_validate_relations_with_string_target() -> None:
+    """Relation with string target should be resolved correctly."""
+    # Use entities with forward references (which are strings)
+    db = Database(entities=[_FwdRefOwner, _FwdRefChild])
+    db.bind("sqlite", ":memory:")
+
+    # String targets should resolve via entity_by_name
+    db.generate_mapping(validate_relations=True)

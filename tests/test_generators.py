@@ -462,3 +462,18 @@ def test_max_non_generator_raises() -> None:
     """max() called with a non-generator raises AssertionError."""
     with pytest.raises(AssertionError):
         max([1, 2, 3])  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Bytecode decompiler branch coverage
+# ---------------------------------------------------------------------------
+
+
+def test_generator_or_condition_decompiles() -> None:
+    """OR conditions in generator expressions should decompile correctly."""
+    # Test that OR branching is handled: (a < 100 or b > 150)
+    result = select(w for w in GenWidget if w.price < 100 or w.price > 150)
+    items = result.fetch_all()
+    # Should include w1 (price=50), w3 (price=200)
+    assert len(items) == 2
+    assert all(w.price < 100 or w.price > 150 for w in items)

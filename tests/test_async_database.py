@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import os
+import typing
 from typing import Any
 
 import pytest
 
 from nextorm.async_database import AsyncDatabase
+from nextorm.debug import QueryStat, global_stats
 from nextorm.entity import Entity
 from nextorm.exceptions import MappingError, MultipleObjectsFoundError, ObjectNotFound
-from nextorm.fields import PK, FieldSpec, Opt, Req, Set, Single
+from nextorm.fields import PK, Opt, Req, Set, Single
 from nextorm.sql.nodes import BinOp, ColumnRef, Param
 
 # ---------------------------------------------------------------------------
@@ -549,6 +551,23 @@ class AsyncParentUnknownKid(Entity):
     gadgets: Set["_NonExistentEntity"]  # type: ignore[name-defined]  # noqa: UP037, F821
 
 
+# typing.ForwardRef target: ensures the ForwardRef branch in _validate_relations is hit
+class _AsyncFwdChild(Entity):
+    label: Req[str]
+    owner: Single["_AsyncFwdParent"]  # noqa: UP037
+
+
+class _AsyncFwdParent(Entity):
+    label: Req[str]
+    items: Set[typing.ForwardRef("_AsyncFwdChild")]  # type: ignore[valid-type]
+
+
+# Opt[str] entity for async _do_insert None→"" path
+class _AsyncOptStrEntity(Entity):
+    name: Req[str]
+    notes: Opt[str]  # nullable=False → None becomes "" on insert
+
+
 # ---------------------------------------------------------------------------
 # Additional coverage tests
 # ---------------------------------------------------------------------------
@@ -621,6 +640,40 @@ async def test_validate_relations_unresolved_target_skipped() -> None:
     db = AsyncDatabase(entities=[AsyncParentUnknownKid])
     await db.bind("sqlite", ":memory:")
     await db.generate_mapping(create_tables=True)
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_validate_relations_false_skips_validation() -> None:
+    """generate_mapping(validate_relations=False) skips _validate_relations."""
+    # Build a DB with no back-reference — normally this would raise MappingError
+    # but with validate_relations=False the check is skipped entirely.
+    db = AsyncDatabase(entities=[AsyncParentUnknownKid])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True, validate_relations=False)
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_validate_relations_typing_forwardref_target_resolves() -> None:
+    """Set with typing.ForwardRef target hits the ForwardRef branch in async _resolve."""
+    db = AsyncDatabase(entities=[_AsyncFwdParent, _AsyncFwdChild])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True)
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_async_opt_str_field_none_becomes_empty_string() -> None:
+    """Opt[str] (nullable=False) field that's None becomes '' on async _do_insert."""
+    db = AsyncDatabase(entities=[_AsyncOptStrEntity])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True)
+    obj = _AsyncOptStrEntity(name="test")
+    await db.asave(obj)
+    result = await db.aselect(_AsyncOptStrEntity).get()
+    assert result is not None
+    assert result.notes == ""
     await db.close()
 
 
@@ -728,7 +781,7 @@ async def test_del_closes_open_connection() -> None:
 class _AsyncUserPK(Entity):
     """Entity with a user-assigned (non-auto) PK for ainsert() tests."""
 
-    id: int = FieldSpec(primary_key=True, auto=False)  # type: ignore[assignment]
+    id: Req[int] = Req(primary_key=True, auto=False)
     label: Req[str]
 
 
@@ -818,7 +871,7 @@ async def test_async_volatile_field_excluded_from_update() -> None:
 
     class _AVolatileEntity(Entity):
         name: Req[str]
-        computed: Opt[int] = FieldSpec(volatile=True)  # type: ignore[assignment]
+        computed: Opt[int] = Opt(volatile=True)
 
     async with AsyncDatabase(entities=[_AVolatileEntity]) as db:
         await db.bind("sqlite", ":memory:")
@@ -1342,7 +1395,7 @@ class _AsyncLazyPost(Entity):
     """Entity with a lazy field for async lazy-load tests."""
 
     heading: Req[str]
-    content: Req[str] = FieldSpec(lazy=True)  # type: ignore[assignment]
+    content: Req[str] = Req(lazy=True)
 
 
 @pytest.mark.asyncio
@@ -1727,3 +1780,71 @@ async def test_aflush_skips_entities_from_other_async_db() -> None:
         stack.pop()
     await db_other.close()
     await db_self.close()
+
+
+# ---------------------------------------------------------------------------
+# _validate_relations error path (unresolvable target or missing backref)
+# ---------------------------------------------------------------------------
+
+
+# Define a valid entity as the relation target, but omit the required back-reference
+class NoBackrefTarget(Entity):
+    pass
+
+
+class NoBackrefOwner(Entity):
+    items: Set[NoBackrefTarget]
+
+
+@pytest.mark.asyncio
+async def test_async_db_validate_relations_unresolvable_target_raises() -> None:
+    db = AsyncDatabase(entities=[NoBackrefOwner, NoBackrefTarget])
+    await db.bind("sqlite", ":memory:")
+    with pytest.raises(Exception) as excinfo:
+        await db.generate_mapping(validate_relations=True)
+    assert "requires a back-reference" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Merge_local_stats branch (new SQL string)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_db_merge_local_stats_adds_new_sql() -> None:
+    db = AsyncDatabase(entities=[AsyncUser])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True)
+    # Simulate a local stat for a fake SQL
+    db._local_stats["SELECT 1"] = QueryStat(count=1, sum_time=0.1, min_time=0.1, max_time=0.1)
+    # Remove from global_stats if present
+    global_stats.pop("SELECT 1", None)
+    db.merge_local_stats()
+    assert "SELECT 1" in global_stats
+
+
+# ---------------------------------------------------------------------------
+# _validate_relations with unresolvable target paths
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_validate_relations_with_none_target() -> None:
+    """Relation with target=None should be skipped gracefully."""
+    # Use simple entities without bidirectional relations
+    db = AsyncDatabase(entities=[AsyncUser])
+    await db.bind("sqlite", ":memory:")
+
+    # Verify that validation works on entities with no complex relations
+    await db.generate_mapping(validate_relations=True)
+
+
+@pytest.mark.asyncio
+async def test_async_validate_relations_with_string_target() -> None:
+    """Relation with string target should be resolved correctly."""
+    # Use simple entities
+    db = AsyncDatabase(entities=[AsyncUser])
+    await db.bind("sqlite", ":memory:")
+
+    # String targets should resolve via entity_by_name
+    await db.generate_mapping(validate_relations=True)

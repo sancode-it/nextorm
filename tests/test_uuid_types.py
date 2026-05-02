@@ -62,19 +62,19 @@ class TestGenerateUUID7:
 
         # Simulate Python 3.12: a uuid module without uuid7.
         fake_uuid_module = types.SimpleNamespace(UUID=_uuid_stdlib.UUID)
-        original = _fields._uuid_stdlib  # type: ignore[attr-defined]
-        _fields._uuid_stdlib = fake_uuid_module  # type: ignore[attr-defined, assignment]
+        original = _fields._uuid_stdlib  # Save the real stdlib uuid module
+        _fields._uuid_stdlib = fake_uuid_module  # type: ignore[assignment]
         try:
             val = _generate_uuid7()
         finally:
-            _fields._uuid_stdlib = original  # type: ignore[attr-defined]
+            _fields._uuid_stdlib = original  # Restore the real stdlib uuid module
         assert isinstance(val, _uuid_stdlib.UUID)
         assert val.version == 7
         assert (val.int >> 62) & 0b11 == 0b10
 
     def test_stdlib_path_used_when_uuid7_available(self) -> None:
         """When the stdlib has uuid7, the stdlib implementation is used."""
-        import nextorm.fields as _fields  # noqa: PLC0415
+        import nextorm.fields as _fields
 
         fake_uuid = _uuid_stdlib.UUID(int=(7 << 76) | (0b10 << 62))
         with patch.object(_fields, "_uuid_stdlib") as mock_uuid:
@@ -136,24 +136,24 @@ class TestULIDClass:
 
 
 class UUIDv7Entity(Entity):
-    id: PK[uuid7]  # type: ignore[assignment]
+    id: PK[uuid7]
     name: Req[str]
 
 
 class UUIDv4Entity(Entity):
-    id: PK[uuid4]  # type: ignore[assignment]
+    id: PK[uuid4]
     name: Req[str]
 
 
 class ULIDEntity(Entity):
-    id: PK[ulid]  # type: ignore[assignment]
+    id: PK[ulid]
     name: Req[str]
 
 
 class UUIDFieldEntity(Entity):
     """Entity with a non-PK UUID field declared via Req[uuid.UUID]."""
 
-    token: Req[_uuid_stdlib.UUID]
+    token: Req[uuid4]
     label: Req[str]
 
 
@@ -162,6 +162,14 @@ class ULIDFieldEntity(Entity):
 
     code: Req[ULID]
     label: Req[str]
+
+
+class _UniqueUUIDEntity(Entity):
+    """Entity with a unique non-PK uuid7 field (entity.py:874 — uuid_auto set for unique)."""
+
+    id: PK[int]
+    name: Req[str]
+    token: Req[uuid7] = Req(unique=True)  # non-PK unique → uuid_auto auto-generated
 
 
 class TestUUIDAv7SentinelEntityMeta:
@@ -231,6 +239,50 @@ class TestNonPKUUIDField:
         assert fi.spec.uuid_auto is None
 
 
+class TestUniqueNonPKUUIDField:
+    """Unique non-PK UUID field: entity.py — uuid_auto set automatically for unique."""
+
+    def test_unique_uuid_field_has_uuid_auto(self) -> None:
+        """Req[uuid7] = Req(unique=True) should set uuid_auto='v7' on the spec."""
+        fi = _UniqueUUIDEntity._fields_["token"]
+        assert fi.spec.uuid_auto == "v7"
+        assert fi.spec.unique is True
+        assert fi.spec.primary_key is False
+
+    def test_unique_uuid_field_auto_generates_on_insert(self) -> None:
+        """Unique uuid7 field auto-generates a value on insert."""
+        db = Database(entities=[_UniqueUUIDEntity])
+        db.bind("sqlite", ":memory:")
+        db.generate_mapping(create_tables=True)
+        with db_session:
+            _UniqueUUIDEntity(name="test")
+        found = db.select(_UniqueUUIDEntity).get()
+        assert found is not None
+        assert found.token is not None
+        db.close()
+
+    def test_unique_uuid_auto_none_override_disables_auto(self) -> None:
+        """Req[uuid7](unique=True, uuid_auto=None) must keep uuid_auto=None."""
+
+        class ManualTokenEntity(Entity):
+            id: PK[int]
+            token: Req[uuid7] = Req(unique=True, uuid_auto=None)
+
+        fi = ManualTokenEntity._fields_["token"]
+        assert fi.spec.uuid_auto is None
+        assert fi.spec.unique is True
+
+    def test_pk_uuid_auto_none_override(self) -> None:
+        """PK[uuid7](uuid_auto=None) must keep uuid_auto=None so the user assigns it."""
+
+        class ManualPKEntity(Entity):
+            id: PK[uuid7] = PK(uuid_auto=None)
+
+        fi = ManualPKEntity._fields_["id"]
+        assert fi.spec.uuid_auto is None
+        assert fi.spec.primary_key is True
+
+
 # ---------------------------------------------------------------------------
 # FieldSpec.uuid_auto default is None
 # ---------------------------------------------------------------------------
@@ -255,13 +307,13 @@ class TestSQLiteUUIDTypes:
     r = SQLiteRenderer()
 
     def test_uuid_maps_to_text(self) -> None:
-        assert self.r.sql_type(Column("id", _uuid_stdlib.UUID)) == "TEXT"
+        assert self.r.sql_type(Column("id", uuid4)) == "TEXT"
 
     def test_ulid_maps_to_text(self) -> None:
         assert self.r.sql_type(Column("id", ULID)) == "TEXT"
 
     def test_uuid_pk_no_autoincrement_in_ddl(self) -> None:
-        col = Column("id", _uuid_stdlib.UUID, primary_key=True, auto_increment=False)
+        col = Column("id", uuid4, primary_key=True, auto_increment=False)
         ddl = self.r._column_def(col)
         assert "TEXT PRIMARY KEY" in ddl
         assert "AUTOINCREMENT" not in ddl
@@ -277,27 +329,27 @@ class TestPostgresUUIDTypes:
     r = PostgresRenderer()
 
     def test_uuid_maps_to_uuid_type(self) -> None:
-        assert self.r.sql_type(Column("id", _uuid_stdlib.UUID)) == "UUID"
+        assert self.r.sql_type(Column("id", uuid4)) == "UUID"
 
     def test_ulid_maps_to_char26(self) -> None:
         assert self.r.sql_type(Column("id", ULID)) == "CHAR(26)"
 
     def test_uuid_pk_not_serial(self) -> None:
         # auto_increment=False → no SERIAL substitution
-        assert self.r.sql_type(Column("id", _uuid_stdlib.UUID, primary_key=True)) == "UUID"
+        assert self.r.sql_type(Column("id", uuid4, primary_key=True)) == "UUID"
 
 
 class TestMariaDBUUIDTypes:
     r = MariaDBRenderer()
 
     def test_uuid_maps_to_char36(self) -> None:
-        assert self.r.sql_type(Column("id", _uuid_stdlib.UUID)) == "CHAR(36)"
+        assert self.r.sql_type(Column("id", uuid4)) == "CHAR(36)"
 
     def test_ulid_maps_to_char26(self) -> None:
         assert self.r.sql_type(Column("id", ULID)) == "CHAR(26)"
 
     def test_uuid_pk_no_auto_increment_in_ddl(self) -> None:
-        col = Column("id", _uuid_stdlib.UUID, primary_key=True, auto_increment=False)
+        col = Column("id", uuid4, primary_key=True, auto_increment=False)
         ddl = self.r._column_def(col)
         assert "AUTO_INCREMENT" not in ddl
         assert "PRIMARY KEY" in ddl
@@ -434,17 +486,17 @@ class TestDatabaseULIDAutoPK:
 
 
 class _AsyncUUIDv7Entity(Entity):
-    id: PK[uuid7]  # type: ignore[assignment]
+    id: PK[uuid7]
     label: Req[str]
 
 
 class _AsyncUUIDv4Entity(Entity):
-    id: PK[uuid4]  # type: ignore[assignment]
+    id: PK[uuid4]
     label: Req[str]
 
 
 class _AsyncULIDEntity(Entity):
-    id: PK[ulid]  # type: ignore[assignment]
+    id: PK[ulid]
     label: Req[str]
 
 

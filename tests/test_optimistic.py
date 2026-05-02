@@ -9,7 +9,7 @@ import pytest
 from nextorm.database import Database
 from nextorm.entity import Entity
 from nextorm.exceptions import OptimisticCheckError
-from nextorm.fields import PK, FieldSpec, Opt, Req
+from nextorm.fields import PK, Opt, Req
 from nextorm.session import db_session
 
 if TYPE_CHECKING:
@@ -26,14 +26,14 @@ class OptArticle(Entity):
     id: PK[int]
     title: Req[str]
     score: Req[int]
-    tag: Opt[str]  # nullable — used for IS NULL optimistic-check tests
+    tag: Opt[str] = Opt(nullable=True)  # nullable — used for IS NULL optimistic-check tests
 
 
 class OptLazyArticle(Entity):
     _table_ = "opt_lazy_article"
     id: PK[int]
     title: Req[str]
-    body: Req[str] = FieldSpec(lazy=True)  # type: ignore[assignment]
+    body: Req[str] = Req(lazy=True)
 
 
 # ---------------------------------------------------------------------------

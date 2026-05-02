@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import datetime
 import decimal
+import uuid
 
-from nextorm import PK, Entity, FieldSpec, Opt, Req, Set, Single, composite_index, composite_key
-from nextorm.fields import Json, LongStr
+import pytest
+
+from nextorm import Entity, FieldSpec, Req, Set, Single, composite_index, composite_key
+from nextorm.entity import RelationInfo
+from nextorm.fields import PK, Json, LongStr, Opt
+from nextorm.fields import RelationKind as _RK
+from nextorm.fields import RelationSpec as _RS
 from nextorm.schema import (
     AddColumn,
     AddIndex,
     AlterColumnType,
     Column,
     CreateTable,
+    DDLRenderer,
     DropColumn,
     DropIndex,
     DropTable,
@@ -42,12 +49,33 @@ class SAuthor(Entity):
     email: Req[str]
 
 
+# Test Opt[str] and Opt[LongStr] nullable and non-nullable columns
 class SPost(Entity):
     title: Req[str]
     slug: Req[str]
     body: Opt[str]
+    body_nullable: Opt[str] = Opt(nullable=True)
+    long_bio: Opt[LongStr]
+    long_bio_nullable: Opt[LongStr] = Opt(nullable=True)
     author: Single[SAuthor]
     tags: Set[STag]
+
+
+# ---------------------------------------------------------------------------
+# Additional DDL tests for Opt[str] and Opt[LongStr] nullable logic
+# ---------------------------------------------------------------------------
+
+
+def test_schema_opt_str_and_longstr_nullable_flags() -> None:
+    table = entity_to_table(SPost)
+    col_body = next(c for c in table.columns if c.name == "body")
+    col_body_nullable = next(c for c in table.columns if c.name == "body_nullable")
+    col_long_bio = next(c for c in table.columns if c.name == "long_bio")
+    col_long_bio_nullable = next(c for c in table.columns if c.name == "long_bio_nullable")
+    assert col_body.nullable is False
+    assert col_body_nullable.nullable is True
+    assert col_long_bio.nullable is False
+    assert col_long_bio_nullable.nullable is True
 
 
 class SComment(Entity):
@@ -71,11 +99,6 @@ class SBlogPost(Entity):
     tags: Set[SBlogTag]
     # SBlogTag also has Set[SBlogPost] — patched below after both are defined
 
-
-# Patch bidirectional back-references so build_schema sees both sides
-from nextorm.entity import RelationInfo  # noqa: E402
-from nextorm.fields import RelationKind as _RK  # noqa: E402
-from nextorm.fields import RelationSpec as _RS  # noqa: E402
 
 # SPost <-> STag M2M: add posts back-ref on STag
 STag._relations_["posts"] = RelationInfo(
@@ -152,7 +175,7 @@ class NonOwner(Entity):
 
 class OwnerExplicit(Entity):
     v: Req[str]
-    non_owner_ref: Single[NonOwner] = _RS(owner=True)  # type: ignore[assignment]
+    non_owner_ref: Single[NonOwner] = Single(owner=True)
 
 
 NonOwner._relations_["owner_ref"] = RelationInfo(
@@ -236,6 +259,78 @@ class TestTargetTableName:
 
         assert _target_table_name(typing.ForwardRef("MyModel")) == "mymodel"
 
+    def test_with_none_returns_empty(self) -> None:
+        assert _target_table_name(None) == ""
+
+
+# --- Test entities for RelationSpec marker options ---
+class X1(Entity):
+    pass
+
+
+class Y1(Entity):
+    x: Single[X1] = Single(column="custom_x_id", fk_name="fk_y1__custom_x_id")
+
+
+class X2(Entity):
+    pass
+
+
+class Y2(Entity):
+    x: Single[X2] = Single(columns=["col1", "col2"])
+
+
+class X3(Entity):
+    pass
+
+
+class Y3(Entity):
+    xs: Set[X3] = Set(reverse_column="y_ref_id")
+
+
+class X4(Entity):
+    pass
+
+
+class Y4(Entity):
+    xs: Set[X4] = Set(reverse="ys")
+
+
+def test_single_relation_column_and_fk_name() -> None:
+    table = entity_to_table(Y1)
+    col = next(c for c in table.columns if c.name == "custom_x_id")
+    fk = next(f for f in table.foreign_keys if f.column == "custom_x_id")
+    assert col is not None
+    assert fk.name == "fk_y1__custom_x_id"
+    assert fk.ref_table == "x1"
+    assert fk.ref_column == "id"
+
+
+def test_single_relation_columns() -> None:
+    table = entity_to_table(Y2)
+    col1 = next(c for c in table.columns if c.name == "col1")
+    col2 = next(c for c in table.columns if c.name == "col2")
+    assert col1 is not None
+    assert col2 is not None
+
+
+def test_set_relation_reverse_column_and_reverse_columns() -> None:
+    X3._relations_["ys"] = RelationInfo(
+        "ys", _RS(kind=_RK.SET, target=Y3, reverse_columns=["x_ref_id"])
+    )
+    schema = build_schema([X3, Y3])
+    join_table = schema["x3_y3"]
+    col_names = {c.name for c in join_table.columns}
+    assert col_names == {"x3_id", "x_ref_id"}
+
+
+def test_set_relation_reverse() -> None:
+    X4._relations_["ys"] = RelationInfo("ys", _RS(kind=_RK.SET, target=Y4, reverse="xs"))
+    schema = build_schema([X4, Y4])
+    join_table = schema["x4_y4"]
+
+    assert len(join_table.columns) == 2
+
 
 class TestTargetMatches:
     def test_identity_match(self) -> None:
@@ -251,6 +346,18 @@ class TestTargetMatches:
 
     def test_unknown_target_returns_false(self) -> None:
         assert _target_matches(42, SAuthor) is False  # type: ignore[arg-type]
+
+    def test_target_matches_none_and_forwardref(self) -> None:
+        import typing
+
+        class Dummy:
+            __name__ = "Dummy"
+
+        # None target
+        assert not _target_matches(None, Dummy)
+        # ForwardRef target
+        ref = typing.ForwardRef("Dummy")
+        assert _target_matches(ref, Dummy)
 
 
 class TestEntityToTable:
@@ -273,7 +380,8 @@ class TestEntityToTable:
         table = entity_to_table(SPost)
         col = table.get_column("body")
         assert col is not None
-        assert col.nullable is True
+        # Opt[str] is not nullable by default
+        assert col.nullable is False
 
     def test_auto_pk_column_present(self) -> None:
         table = entity_to_table(SPost)
@@ -702,7 +810,8 @@ class TestDiffSchemas:
 
 
 class TestSQLiteRendererSqlType:
-    r = SQLiteRenderer()
+    def setup_method(self) -> None:
+        self.r = SQLiteRenderer()
 
     def test_int(self) -> None:
         assert self.r.sql_type(Column("x", int)) == "INTEGER"
@@ -732,7 +841,7 @@ class TestSQLiteRendererSqlType:
         assert self.r.sql_type(Column("x", str, max_len=50)) == "VARCHAR(50)"
 
     def test_unknown_type_falls_back_to_text(self) -> None:
-        assert self.r.sql_type(Column("x", complex)) == "TEXT"
+        assert self.r.sql_type(Column("x", complex)) == "TEXT"  # type: ignore
 
     def test_sql_type_override_takes_precedence(self) -> None:
         col = Column("data", bytes, sql_type_override="JSONB")
@@ -743,7 +852,8 @@ class TestSQLiteRendererSqlType:
 
 
 class TestSQLiteRendererColumnDef:
-    r = SQLiteRenderer()
+    def setup_method(self) -> None:
+        self.r = SQLiteRenderer()
 
     def test_pk_with_autoincrement(self) -> None:
         col = Column("id", int, primary_key=True, auto_increment=True)
@@ -774,7 +884,8 @@ class TestSQLiteRendererColumnDef:
 
 
 class TestSQLiteRendererStatements:
-    r = SQLiteRenderer()
+    def setup_method(self) -> None:
+        self.r = SQLiteRenderer()
 
     def test_create_table_basic(self) -> None:
         table = Table(
@@ -840,7 +951,8 @@ class TestSQLiteRendererStatements:
 class TestDDLRendererDispatch:
     """Verify that DDLRenderer.render() dispatches every SchemaOp variant."""
 
-    r = SQLiteRenderer()
+    def setup_method(self) -> None:
+        self.r = SQLiteRenderer()
 
     def test_render_create_table(self) -> None:
         op: SchemaOp = CreateTable(Table(name="t", columns=[Column("id", int)]))
@@ -878,7 +990,8 @@ class TestDDLRendererDispatch:
 
 
 class TestPostgresRendererSqlType:
-    r = PostgresRenderer()
+    def setup_method(self) -> None:
+        self.r = PostgresRenderer()
 
     def test_int(self) -> None:
         assert self.r.sql_type(Column("x", int)) == "INTEGER"
@@ -914,7 +1027,7 @@ class TestPostgresRendererSqlType:
         assert self.r.sql_type(Column("s", str, max_len=100)) == "VARCHAR(100)"
 
     def test_unknown_type_falls_back_to_text(self) -> None:
-        assert self.r.sql_type(Column("x", list)) == "TEXT"
+        assert self.r.sql_type(Column("x", list)) == "TEXT"  # type: ignore
 
     def test_sql_type_override_takes_precedence(self) -> None:
         col = Column("data", bytes, sql_type_override="JSONB")
@@ -922,7 +1035,8 @@ class TestPostgresRendererSqlType:
 
 
 class TestPostgresRendererStatements:
-    r = PostgresRenderer()
+    def setup_method(self) -> None:
+        self.r = PostgresRenderer()
 
     def test_create_table_basic(self) -> None:
         table = Table(
@@ -998,6 +1112,24 @@ class TestPostgresRendererStatements:
         op: SchemaOp = DropIndex(table_name="post", index_name="idx_post__title")
         assert self.r.render(op) == "DROP INDEX IF EXISTS idx_post__title"
 
+    def test_alter_column_type_returns_statement(self) -> None:
+        col = Column("amount", decimal.Decimal, precision=8, scale=2, nullable=False)
+        sql = self.r.alter_column_type("post", col)
+        # Should be a real ALTER statement, not a comment
+        assert sql.startswith("ALTER TABLE post ALTER COLUMN amount TYPE NUMERIC(8, 2)")
+
+    def test_sql_type_uuid_ulid_override(self) -> None:
+        import nextorm.fields as _fields
+
+        col = Column("uuid_col", _fields.uuid4)
+        assert self.r.sql_type(col) == "UUID"
+        col2 = Column("ulid_col", _fields.ulid)
+        assert self.r.sql_type(col2) == "CHAR(26)"
+
+    def test_sql_type_override_takes_precedence_ulid(self) -> None:
+        col = Column("ulid_col", str, sql_type_override="BINARY(16)")
+        assert self.r.sql_type(col) == "BINARY(16)"
+
 
 # ---------------------------------------------------------------------------
 # MariaDBRenderer
@@ -1005,7 +1137,8 @@ class TestPostgresRendererStatements:
 
 
 class TestMariaDBRendererSqlType:
-    r = MariaDBRenderer()
+    def setup_method(self) -> None:
+        self.r = MariaDBRenderer()
 
     def test_int(self) -> None:
         assert self.r.sql_type(Column("x", int)) == "INT"
@@ -1032,7 +1165,7 @@ class TestMariaDBRendererSqlType:
         assert self.r.sql_type(Column("s", str, max_len=80)) == "VARCHAR(80)"
 
     def test_unknown_falls_back_to_text(self) -> None:
-        assert self.r.sql_type(Column("x", list)) == "TEXT"
+        assert self.r.sql_type(Column("x", list)) == "TEXT"  # type: ignore
 
     def test_sql_type_override_takes_precedence(self) -> None:
         col = Column("data", bytes, sql_type_override="JSON")
@@ -1040,7 +1173,8 @@ class TestMariaDBRendererSqlType:
 
 
 class TestMariaDBRendererStatements:
-    r = MariaDBRenderer()
+    def setup_method(self) -> None:
+        self.r = MariaDBRenderer()
 
     def test_create_table_basic(self) -> None:
         table = Table(
@@ -1113,6 +1247,27 @@ class TestMariaDBRendererStatements:
     def test_render_delegates_non_drop_index(self) -> None:
         op: SchemaOp = DropTable(table_name="post")
         assert self.r.render(op) == "DROP TABLE IF EXISTS post"
+
+    def test_drop_column_with_if_exists(self) -> None:
+        sql = self.r.drop_column("post", "body")
+        assert sql == "ALTER TABLE post DROP COLUMN body"
+
+    def test_alter_column_type_returns_statement(self) -> None:
+        col = Column("amount", decimal.Decimal, precision=8, scale=2, nullable=False)
+        sql = self.r.alter_column_type("post", col)
+        assert sql.startswith("ALTER TABLE post MODIFY COLUMN amount DECIMAL(8, 2) NOT NULL")
+
+    def test_sql_type_uuid_ulid_override(self) -> None:
+        import nextorm.fields as _fields
+
+        col = Column("uuid_col", _fields.uuid4)
+        assert self.r.sql_type(col) == "CHAR(36)"
+        col2 = Column("ulid_col", _fields.ulid)
+        assert self.r.sql_type(col2) == "CHAR(26)"
+
+    def test_sql_type_override_takes_precedence_ulid(self) -> None:
+        col = Column("ulid_col", str, sql_type_override="BINARY(16)")
+        assert self.r.sql_type(col) == "BINARY(16)"
 
 
 # ---------------------------------------------------------------------------
@@ -1379,7 +1534,7 @@ class TestBuilderPassesPrecisionScaleUnsigned:
 
     def test_precision_and_scale_pass_through(self) -> None:
         class PriceEntity(Entity):
-            amount: Req[decimal.Decimal] = FieldSpec(precision=10, scale=2)  # type: ignore[assignment]
+            amount: Req[decimal.Decimal] = Req(precision=10, scale=2)
 
         table = entity_to_table(PriceEntity)
         col = table.get_column("amount")
@@ -1389,7 +1544,7 @@ class TestBuilderPassesPrecisionScaleUnsigned:
 
     def test_unsigned_pass_through(self) -> None:
         class CountEntity(Entity):
-            qty: Req[int] = FieldSpec(unsigned=True)  # type: ignore[assignment]
+            qty: Req[int] = Req(unsigned=True)
 
         table = entity_to_table(CountEntity)
         col = table.get_column("qty")
@@ -1398,7 +1553,7 @@ class TestBuilderPassesPrecisionScaleUnsigned:
 
     def test_precision_scale_unsigned_in_ddl(self) -> None:
         class InvoiceItem(Entity):
-            price: Req[decimal.Decimal] = FieldSpec(precision=8, scale=2)  # type: ignore[assignment]
+            price: Req[decimal.Decimal] = Req(precision=8, scale=2)
 
         table = entity_to_table(InvoiceItem)
         r = MariaDBRenderer()
@@ -1407,7 +1562,7 @@ class TestBuilderPassesPrecisionScaleUnsigned:
 
     def test_unsigned_int_in_ddl(self) -> None:
         class Stock(Entity):
-            quantity: Req[int] = FieldSpec(unsigned=True)  # type: ignore[assignment]
+            quantity: Req[int] = Req(unsigned=True)
 
         table = entity_to_table(Stock)
         r = MariaDBRenderer()
@@ -1490,7 +1645,7 @@ class TestBuilderPassesSize:
 
     def test_size_pass_through(self) -> None:
         class SmallIntEntity(Entity):
-            count: Req[int] = FieldSpec(size=16)  # type: ignore[assignment]
+            count: Req[int] = Req(size=16)
 
         table = entity_to_table(SmallIntEntity)
         col = table.get_column("count")
@@ -1499,14 +1654,14 @@ class TestBuilderPassesSize:
 
     def test_size_in_mariadb_ddl(self) -> None:
         class BigEntity(Entity):
-            big_id: Req[int] = FieldSpec(size=64)  # type: ignore[assignment]
+            big_id: Req[int] = Req(size=64)
 
         sql = MariaDBRenderer().create_table(entity_to_table(BigEntity))
         assert "BIGINT" in sql
 
     def test_size_in_postgres_ddl(self) -> None:
         class ByteEntity(Entity):
-            flags: Req[int] = FieldSpec(size=8)  # type: ignore[assignment]
+            flags: Req[int] = Req(size=8)
 
         sql = PostgresRenderer().create_table(entity_to_table(ByteEntity))
         assert "SMALLINT" in sql
@@ -1717,3 +1872,212 @@ class TestAlterColumnTypeRenderDispatch:
         op: SchemaOp = AlterColumnType(table_name="t", column=Column("x", int, nullable=False))
         result = MariaDBRenderer().render(op)
         assert result == "ALTER TABLE t MODIFY COLUMN x INT NOT NULL"
+
+
+# ---------------------------------------------------------------------------
+# DDLRenderer/SQLiteRenderer edge cases
+# ---------------------------------------------------------------------------
+
+
+class DummyRenderer(DDLRenderer):
+    def sql_type(self, column: Column) -> str:
+        return "DUMMY"
+
+    def create_table(self, table: Table) -> str:
+        return "CREATE TABLE dummy"
+
+    def drop_table(self, table_name: str) -> str:
+        return "DROP TABLE dummy"
+
+    def add_column(self, table_name: str, column: Column) -> str:
+        return "ALTER TABLE dummy ADD COLUMN"
+
+    def drop_column(self, table_name: str, column_name: str) -> str:
+        return "ALTER TABLE dummy DROP COLUMN"
+
+    def alter_column_type(self, table_name: str, column: Column) -> str:
+        return "ALTER COLUMN TYPE"
+
+    def create_index(self, table_name: str, index: Index) -> str:
+        return "CREATE INDEX dummy"
+
+    def drop_index(self, index_name: str) -> str:
+        return "DROP INDEX dummy"
+
+
+def test_ddlrenderer_render_dispatch() -> None:
+    r = DummyRenderer()
+    t = Table(name="t")
+    c = Column(name="c", py_type=int)
+    i = Index(name="idx", columns=["c"])
+    # Each op type
+
+    assert r.render(CreateTable(table=t)) == "CREATE TABLE dummy"
+    assert r.render(DropTable(table_name="t")) == "DROP TABLE dummy"
+    assert r.render(AddColumn(table_name="t", column=c)) == "ALTER TABLE dummy ADD COLUMN"
+    assert r.render(DropColumn(table_name="t", column_name="c")) == "ALTER TABLE dummy DROP COLUMN"
+    assert r.render(AlterColumnType(table_name="t", column=c)) == "ALTER COLUMN TYPE"
+    assert r.render(AddIndex(table_name="t", index=i)) == "CREATE INDEX dummy"
+    assert r.render(DropIndex(table_name="t", index_name="idx")) == "DROP INDEX dummy"
+
+    # Unknown op triggers assert_never (should raise AssertionError)
+    class UnknownOp:
+        pass
+
+    with pytest.raises(AssertionError):
+        r.render(UnknownOp())  # type: ignore[arg-type]
+
+
+def test_sqlite_renderer_type_mapping_and_alter_column_type() -> None:
+    r = SQLiteRenderer()
+    # decimal with precision/scale
+    c = Column(name="c", py_type=decimal.Decimal, precision=5, scale=2)
+    assert r.sql_type(c) == "NUMERIC(5, 2)"
+    # enum
+    import enum
+
+    class E(enum.Enum):
+        A = 1
+
+    c = Column(name="c", py_type=E)
+    assert r.sql_type(c) == "TEXT"
+    # uuid
+    c = Column(name="c", py_type=uuid.UUID)
+    assert r.sql_type(c) == "TEXT"
+    # fallback
+    c = Column(name="c", py_type=bytes)
+    assert r.sql_type(c) == "BLOB"
+    # alter_column_type returns comment
+    c = Column(name="c", py_type=int)
+    out = r.alter_column_type("tbl", c)
+    assert out.startswith("-- SQLite: cannot ALTER COLUMN TYPE")
+
+
+# ---------------------------------------------------------------------------
+# v0.2 coverage gaps — builder and DDL
+# ---------------------------------------------------------------------------
+
+
+def test_sqlite_renderer_ulid_type() -> None:
+    """SQLiteRenderer must recognise the ulid sentinel type and render TEXT."""
+    from nextorm.fields import ulid  # noqa: PLC0415
+
+    r = SQLiteRenderer()
+    c = Column(name="code", py_type=ulid)
+    assert r.sql_type(c) == "TEXT"
+
+
+def test_resolve_target_cls_forward_ref() -> None:
+    """_resolve_target_cls must handle a typing.ForwardRef as a target."""
+    import typing  # noqa: PLC0415
+
+    from nextorm.schema.builder import _resolve_target_cls  # noqa: PLC0415
+
+    class RefEntity(Entity):
+        label: Req[str]
+
+    ref = typing.ForwardRef("RefEntity")
+    result = _resolve_target_cls(ref, [RefEntity])
+    assert result is RefEntity
+
+
+def test_resolve_target_cls_forward_ref_not_found() -> None:
+    """_resolve_target_cls returns None when the ForwardRef name has no match."""
+    import typing  # noqa: PLC0415
+
+    from nextorm.schema.builder import _resolve_target_cls  # noqa: PLC0415
+
+    result = _resolve_target_cls(typing.ForwardRef("NoSuchEntity"), [])
+    assert result is None
+
+
+# --- M2M join table column overrides via reverse_column / reverse_columns ---
+
+
+class _M2MLeft(Entity):
+    rights: Set["_M2MRight"]  # noqa: UP037
+
+
+class _M2MRight(Entity):
+    lefts: Set[_M2MLeft]
+
+
+class _M2MLeftRevCol(Entity):
+    rights: Set["_M2MRightRevCol"] = Set(reverse_column="left_custom_id")  # noqa: UP037
+
+
+class _M2MRightRevCol(Entity):
+    lefts: Set[_M2MLeftRevCol]
+
+
+class _M2MLeftRevCols(Entity):
+    rights: Set["_M2MRightRevCols"] = Set(reverse_columns=["left_list_id"])  # noqa: UP037
+
+
+class _M2MRightRevCols(Entity):
+    lefts: Set[_M2MLeftRevCols]
+
+
+class _M2MLeftCol(Entity):
+    rights: Set["_M2MRightCol"] = Set(column="left_explicit_id")  # noqa: UP037
+
+
+class _M2MRightCol(Entity):
+    lefts: Set[_M2MLeftCol]
+
+
+class _M2MLeftCols(Entity):
+    rights: Set["_M2MRightCols"] = Set(columns=["left_multi_id"])  # noqa: UP037
+
+
+class _M2MRightCols(Entity):
+    lefts: Set[_M2MLeftCols]
+
+
+def test_m2m_reverse_column_overrides_join_column() -> None:
+    """reverse_column on a Set should rename the col pointing back to that table."""
+    tables = build_schema([_M2MLeftRevCol, _M2MRightRevCol])
+    # The join table must contain a column named "left_custom_id"
+    join_tables = {
+        name: t
+        for name, t in tables.items()
+        if name not in ("_m2mleftrevcol", "_m2mrigtrevcol", "_m2mrightrevcol")
+    }
+    join_t = next(iter(join_tables.values()))
+    col_names = {c.name for c in join_t.columns}
+    assert "left_custom_id" in col_names
+
+
+def test_m2m_reverse_columns_list_overrides_join_column() -> None:
+    """reverse_columns=[...] on a Set should rename the col using the first item."""
+    tables = build_schema([_M2MLeftRevCols, _M2MRightRevCols])
+    join_tables = {
+        name: t
+        for name, t in tables.items()
+        if name not in ("_m2mleftrevcolS", "_m2mrightrevcolS", "_m2mleftrevcols", "_m2mrightrevcols")
+    }
+    join_t = next(iter(join_tables.values()))
+    col_names = {c.name for c in join_t.columns}
+    assert "left_list_id" in col_names
+
+
+def test_m2m_column_overrides_join_column_a() -> None:
+    """column on a Set should rename the col pointing from the join table to that entity."""
+    tables = build_schema([_M2MLeftCol, _M2MRightCol])
+    join_tables = {
+        name: t for name, t in tables.items() if name not in ("_m2mleftcol", "_m2mrightcol")
+    }
+    join_t = next(iter(join_tables.values()))
+    col_names = {c.name for c in join_t.columns}
+    assert "left_explicit_id" in col_names
+
+
+def test_m2m_columns_list_overrides_join_column_a() -> None:
+    """columns=[...] on a Set should rename the col using the first item."""
+    tables = build_schema([_M2MLeftCols, _M2MRightCols])
+    join_tables = {
+        name: t for name, t in tables.items() if name not in ("_m2mleftcols", "_m2mrightcols")
+    }
+    join_t = next(iter(join_tables.values()))
+    col_names = {c.name for c in join_t.columns}
+    assert "left_multi_id" in col_names

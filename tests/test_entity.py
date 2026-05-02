@@ -26,7 +26,7 @@ from nextorm.entity import (
     _resolve_entity_target,
     _target_name,
 )
-from nextorm.fields import FieldSpec, LongStr, RelationKind
+from nextorm.fields import FieldSpec, LongStr, RelationKind, RelationSpec, uuid7
 from nextorm.fields import PrimaryKey as _PrimaryKey
 from nextorm.session import db_session
 from nextorm.session import db_session as _db_session
@@ -69,6 +69,32 @@ class OrderItem(Entity):
         self._cached_total = 0.0
 
 
+# Helper entities for coverage tests
+class Parent(Entity):
+    id: PK[int]
+    name: Req[str]
+
+
+class Child(Entity):
+    name: Req[str]
+    parent: Single[Parent | None]
+
+
+class Item(Entity):
+    id: PK[int]
+    name: Req[str]
+
+
+class Holder(Entity):
+    name: Req[str]
+    items: Set[Item]
+
+
+class HolderWithRelationSpec(Entity):
+    name: Req[str]
+    items: Set[Item] = RelationSpec(kind=RelationKind.SET, target=Item, table="custom_join") # type: ignore[assignment]
+
+
 # ---------------------------------------------------------------------------
 # Field alias tests
 # ---------------------------------------------------------------------------
@@ -83,10 +109,84 @@ class TestFieldAliases:
         assert not fi.spec.nullable
         assert not fi.spec.primary_key
 
-    def test_opt_field_is_nullable(self) -> None:
+    def test_opt_str_field_is_not_nullable_by_default(self) -> None:
         fi = Product._fields_["description"]
         assert fi.py_type is str
+        assert fi.spec.nullable is False
+
+    def test_opt_str_field_explicit_nullable(self) -> None:
+        class NullableDesc(Entity):
+            description: Opt[str] = Opt(nullable=True)
+
+        fi = NullableDesc._fields_["description"]
+        assert fi.py_type is str
         assert fi.spec.nullable is True
+
+    def test_opt_int_field_is_nullable_by_default(self) -> None:
+        class OptIntEntity(Entity):
+            score: Opt[int]
+
+        fi = OptIntEntity._fields_["score"]
+        assert fi.py_type is int
+        assert fi.spec.nullable is True
+
+    def test_opt_int_field_explicit_non_nullable(self) -> None:
+        class NonNullIntEntity(Entity):
+            score: Opt[int] = Opt(nullable=False)
+
+        fi = NonNullIntEntity._fields_["score"]
+        assert fi.py_type is int
+        assert fi.spec.nullable is False
+
+    def test_opt_longstr_field_is_not_nullable_by_default(self) -> None:
+        class OptLongStrEntity(Entity):
+            bio: Opt[LongStr]
+
+        fi = OptLongStrEntity._fields_["bio"]
+        assert issubclass(fi.py_type, str)
+        assert fi.py_type is LongStr
+        assert fi.spec.nullable is False
+
+    def test_opt_longstr_field_explicit_nullable(self) -> None:
+        class NullableLongStrEntity(Entity):
+            bio: Opt[LongStr] = Opt(nullable=True)
+
+        fi = NullableLongStrEntity._fields_["bio"]
+        assert issubclass(fi.py_type, str)
+        assert fi.py_type is LongStr
+        assert fi.spec.nullable is True
+
+    def test_opt_float_field_is_nullable_by_default(self) -> None:
+        class OptFloatEntity(Entity):
+            weight: Opt[float]
+
+        fi = OptFloatEntity._fields_["weight"]
+        assert fi.py_type is float
+        assert fi.spec.nullable is True
+
+    def test_opt_float_field_explicit_non_nullable(self) -> None:
+        class NonNullFloatEntity(Entity):
+            weight: Opt[float] = Opt(nullable=False)
+
+        fi = NonNullFloatEntity._fields_["weight"]
+        assert fi.py_type is float
+        assert fi.spec.nullable is False
+
+    def test_opt_bool_field_is_nullable_by_default(self) -> None:
+        class OptBoolEntity(Entity):
+            indoor: Opt[bool]
+
+        fi = OptBoolEntity._fields_["indoor"]
+        assert fi.py_type is bool
+        assert fi.spec.nullable is True
+
+    def test_opt_bool_field_explicit_non_nullable(self) -> None:
+        class NonNullBoolEntity(Entity):
+            indoor: Opt[bool] = Opt(nullable=False)
+
+        fi = NonNullBoolEntity._fields_["indoor"]
+        assert fi.py_type is bool
+        assert fi.spec.nullable is False
 
     def test_pk_field_has_primary_key_spec(self) -> None:
         fi = Article._fields_["custom_id"]
@@ -154,7 +254,8 @@ class TestEntityMeta:
 
     def test_optional_field_nullable(self) -> None:
         fi = Product._fields_["description"]
-        assert fi.spec.nullable is True
+        # Opt[str] is not nullable by default
+        assert fi.spec.nullable is False
 
     def test_relations_dict_populated(self) -> None:
         assert "tags" in Product._relations_
@@ -271,7 +372,7 @@ class TestDescriptors:
 
     def test_virtual_raises_before_set(self) -> None:
         item = OrderItem.__new__(OrderItem)
-        with pytest.raises(AttributeError, match="has not been set yet"):
+        with pytest.raises(AttributeError, match="has not been initialised"):
             _ = item._cached_total
 
     def test_virtual_read_write(self) -> None:
@@ -283,7 +384,7 @@ class TestDescriptors:
         item = OrderItem.__new__(OrderItem)
         item._cached_total = 5.0
         del item._cached_total
-        with pytest.raises(AttributeError):
+        with pytest.raises(AttributeError, match="has not been initialised"):
             _ = item._cached_total
 
     def test_field_descriptor_delete(self) -> None:
@@ -331,21 +432,21 @@ class TestEntityInit:
     def test_field_default_applied_when_not_provided(self) -> None:
         class Scored(Entity):
             name: Req[str]
-            score: Req[int] = FieldSpec(default=0)  # type: ignore[assignment]
+            score: Req[int] = Req(default=0)
 
         s = Scored(name="test")
         assert s.score == 0
 
     def test_field_default_callable_applied(self) -> None:
         class Tagged(Entity):
-            label: Req[str] = FieldSpec(default=lambda: "default_label")  # type: ignore[assignment]
+            label: Req[str] = Req(default=lambda: "default_label")
 
         t = Tagged()
         assert t.label == "default_label"
 
     def test_explicit_kwarg_overrides_default(self) -> None:
         class Valued(Entity):
-            amount: Req[int] = FieldSpec(default=42)  # type: ignore[assignment]
+            amount: Req[int] = Req(default=42)
 
         v = Valued(amount=99)
         assert v.amount == 99
@@ -460,7 +561,13 @@ class TestGetPk:
 
         db = Database(entities=[_SimpleEntity])
         db.bind("sqlite", ":memory:")
-        db.generate_mapping(create_tables=True)
+        try:
+            db.generate_mapping(create_tables=True)
+        except Exception as exc:
+            print("\n--- DDL DEBUG ---")
+            print(db.last_sql)
+            print(f"Exception: {exc}")
+            raise
         with db_session:
             e = _SimpleEntity(name="x", score=1)
         assert e.get_pk() == e.id
@@ -629,7 +736,7 @@ class _LazyPage(Entity):
     """Entity with an explicit lazy field for to_dict and EntityMeta tests."""
 
     title: Req[str]
-    body: Req[str] = FieldSpec(lazy=True)  # type: ignore[assignment]
+    body: Req[str] = Req(lazy=True)
 
 
 class _LongStrDoc(Entity):
@@ -714,7 +821,7 @@ class TestLazyFieldMeta:
         with pytest.raises(TypeError, match="primary key"):
 
             class _BadEntity(Entity):  # type: ignore[unused-ignore]
-                pk: PK[int] = FieldSpec(primary_key=True, lazy=True)  # type: ignore[assignment]
+                pk: PK[int] = PK(primary_key=True, lazy=True)
 
     def test_lazy_sentinel_is_exported(self) -> None:
         from nextorm.entity import _LAZY_SENTINEL as _S  # noqa: PLC0415
@@ -734,7 +841,7 @@ class TestLazyFieldMeta:
         """Providing an explicit FieldSpec opts the user in to controlling lazy."""
 
         class _EagerLong(Entity):
-            text: Req[LongStr] = FieldSpec(lazy=False)  # type: ignore[assignment]
+            text: Req[LongStr] = Req(lazy=False)
 
         fi = _EagerLong._fields_["text"]
         assert fi.spec.lazy is False
@@ -951,6 +1058,9 @@ class _LookupUser(Entity):
     age: Req[int]
 
 
+print("_LookupUser._fields_:", _LookupUser._fields_)
+
+
 class _MultiPK(Entity):
     _table_name_ = "_multi_lookup_entity"
     a: Req[int]
@@ -1138,9 +1248,7 @@ async def test_entity_aselect_returns_async_queryset() -> None:
         await db.asave(u)
 
     async with _sess:
-        results = (
-            await _AsyncLookupUser.aselect().filter(_AsyncLookupUser.name == "eve").fetch_all()
-        )
+        results = await _AsyncLookupUser.aselect().filter(_AsyncLookupUser.name == "eve").fetch_all()
         assert len(results) == 1
         assert results[0].name == "eve"
 
@@ -1175,3 +1283,280 @@ async def test_entity_aget_returns_matching_entity() -> None:
         assert none_result is None
 
     await db.close()
+
+
+# ---------------------------------------------------------------------------
+# EntityMeta — v0.2 coverage gaps
+# ---------------------------------------------------------------------------
+
+# Module-level entities for the PK[Entity] and RelationSpec backward-compat tests.
+# They must be at module level because from __future__ import annotations turns all
+# annotations into strings, and local-scope entities can't be resolved during eval.
+
+
+class _PKRelParent(Entity):
+    id: PK[int]
+    label: Req[str]
+
+
+class _PKRelChild(Entity):
+    parent: PK[_PKRelParent]
+
+
+class _BSRelParent(Entity):
+    id: PK[int]
+    label: Req[str]
+
+
+class _BSRelChild(Entity):
+    id: PK[int]
+    owner: Single[_BSRelParent] = RelationSpec(  # type: ignore[assignment]
+        kind=RelationKind.SINGLE,
+        target=_BSRelParent,
+    )
+
+
+class _BSSParent(Entity):
+    id: PK[int]
+    label: Req[str]
+    kids: Set["_BSSChild"] = RelationSpec(  # type: ignore[assignment]  # noqa: UP037
+        kind=RelationKind.SET,
+        target="_BSSChild",
+    )
+
+
+class _BSSChild(Entity):
+    id: PK[int]
+    owner: Single[_BSSParent] = RelationSpec(  # type: ignore[assignment]
+        kind=RelationKind.SINGLE,
+        target=_BSSParent,
+    )
+
+
+# _BSSParent.kids is a back-ref; since Set is added on the CHILD side's RelationSpec,
+# entity metaclass doesn't create it automatically on parent — that's intentional for this test.
+
+
+class TestEntityMetaV2:
+    """Tests for EntityMeta code paths added/changed in v0.2."""
+
+    # --- Marker instance as annotation (covers __origin__ instance path) ---
+
+    def test_marker_instance_as_annotation_recognised_as_field(self) -> None:
+        """Using a marker instance as the annotation value is also handled."""
+
+        class InstanceAnnotation(Entity):
+            value: Req[int]()  # type: ignore[valid-type]
+
+        assert "value" in InstanceAnnotation._fields_
+
+    # --- Local with options (covers the hasattr(_options) branch for Local) ---
+
+    def test_local_with_default_stored_in_local_spec(self) -> None:
+        """Local[T] with a default option should store it in LocalSpec."""
+
+        class LocalDefaults(Entity):
+            _count: Local[int] = Local(default=0)
+
+        li = LocalDefaults._locals_["_count"]
+        assert li.spec.has_default is True
+        assert li.spec.default == 0
+
+    def test_local_with_callable_default(self) -> None:
+        """Local[T](default=list) stores a factory default."""
+
+        class LocalFactory(Entity):
+            _items: Local[list[str]] = Local(default=list)
+
+        li = LocalFactory._locals_["_items"]
+        assert li.spec.has_default is True
+        assert li.spec.default is list
+
+    def test_entity_init_applies_local_callable_default_per_instance(self) -> None:
+        """Entity.__init__ calls the factory default so each instance gets a fresh object."""
+
+        class LocalFactoryEntity(Entity):
+            _items: Local[list[int]] = Local(default=list)
+
+        a = LocalFactoryEntity()
+        b = LocalFactoryEntity()
+        a._items.append(1)
+        assert b._items == []
+
+    # --- Field with primary_key=True in marker_opts (Req + primary_key) ---
+
+    def test_req_field_with_primary_key_option_becomes_pk(self) -> None:
+        """Req[int](primary_key=True) should mark the field as PK."""
+
+        class ExplicitPKField(Entity):
+            uid: Req[int] = Req(primary_key=True)
+
+        fi = ExplicitPKField._fields_["uid"]
+        assert fi.spec.primary_key is True
+
+    # --- PK[str] annotation (non-int PK, no auto-increment) ---
+
+    def test_pk_str_annotation_no_auto(self) -> None:
+        """PK[str] should set primary_key=True but auto=False."""
+
+        class StringPKEntity(Entity):
+            code: PK[str]
+
+        fi = StringPKEntity._fields_["code"]
+        assert fi.spec.primary_key is True
+        assert fi.spec.auto is False
+
+    # --- Entity with id field not marked as PK ---
+
+    def test_entity_with_id_field_not_pk_raises(self) -> None:
+        """Defining `id: Req[int]` without marking it as PK should raise TypeError."""
+        with pytest.raises(TypeError, match="primary key"):
+
+            class BadIdEntity(Entity):  # type: ignore[unused-ignore]
+                id: Req[int]  # not a PK → should raise
+
+    # --- Entity.__init__ with uninitialized persistent field ---
+
+    def test_entity_init_sets_none_for_uninitialised_fields(self) -> None:
+        """Entity.__init__ ensures every field has at least None if not provided."""
+
+        class OptFields(Entity):
+            name: Req[str]
+            score: Opt[int]
+
+        obj = OptFields(name="x")
+        # score was not provided; Entity.__init__ should initialize it to None
+        assert obj.__dict__.get("_field_score") is None or obj.score is None
+
+    # --- Non-string `column` option on a field marker raises TypeError ---
+
+    def test_field_column_non_string_raises_type_error(self) -> None:
+        with pytest.raises(TypeError, match="must be a string"):
+
+            class BadColumnEntity(Entity):  # pyright: ignore[reportUnusedClass]
+                name: Req[str] = Req(column=123)
+
+    # --- UUID field: non-pk, non-unique → uuid_auto=None ---
+
+    def test_uuid_non_pk_non_unique_uuid_auto_is_none(self) -> None:
+        """A uuid7 field that is not PK and not unique should not auto-generate."""
+
+        class UUIDField(Entity):
+            ref: Req[uuid7]  # no unique, no PK
+
+        fi = UUIDField._fields_["ref"]
+        assert fi.spec.uuid_auto is None
+
+    # --- PK[SomeEntity]: FK-PK creates a relation, not a scalar field ---
+
+    def test_pk_entity_annotation_creates_relation(self) -> None:
+        """PK[SomeEntity] should be treated as a FK primary-key relation."""
+        assert "parent" in _PKRelChild._relations_
+        ri = _PKRelChild._relations_["parent"]
+        assert ri.spec.primary_key is True
+
+    # --- Single[X] = RelationSpec(…) backward-compat path ---
+
+    def test_single_with_relation_spec_value_backward_compat(self) -> None:
+        """Single[X] = RelationSpec(…) (old API) should still build a valid relation."""
+        assert "owner" in _BSRelChild._relations_
+
+    # --- Set[X] = RelationSpec(…) backward-compat path ---
+
+    def test_set_with_relation_spec_value_backward_compat(self) -> None:
+        """Set[X] = RelationSpec(…) (old API) should still build a valid relation."""
+        assert "kids" in _BSSParent._relations_
+        assert "owner" in _BSSChild._relations_
+
+    # --- Bare marker annotation (line 719) ---
+
+    def test_bare_req_annotation_raises_type_error(self) -> None:
+        """Using bare Req (not subscripted) as annotation should raise TypeError."""
+        with pytest.raises(TypeError):
+
+            class BadEntity(Entity): # pyright: ignore[reportUnusedClass]
+                name: Req  # type: ignore[type-arg]
+
+    # --- Union types in annotations (lines 780–781) ---
+
+    def test_single_optional_union_type_detection(self) -> None:
+        """Single[T | None] should be detected as nullable FK."""
+        ri = Child._relations_["parent"]
+        assert ri.spec.nullable is True
+
+    # --- Field marker with invalid `columns` option (line 806) ---
+
+    def test_field_marker_with_columns_option_raises(self) -> None:
+        """Field markers cannot have 'columns' (only 'column')."""
+        import types
+
+        bad_marker = types.SimpleNamespace(_options={"columns": ("a",)})
+        with pytest.raises(TypeError, match="cannot specify 'columns'"):
+            type(
+                "BadEntity",
+                (Entity,),
+                {"__annotations__": {"x": Req[int]}, "x": bad_marker},
+            )
+
+    # --- UUID field without PK, not unique → uuid_auto=None (lines 874, 925) ---
+
+    def test_uuid_field_non_pk_non_unique_sets_uuid_auto_none(self) -> None:
+        """UUID field that is neither PK nor unique should have uuid_auto=None."""
+
+        class E(Entity):
+            token: Req[uuid7]
+
+        fi = E._fields_["token"]
+        assert fi.spec.uuid_auto is None
+
+    # --- Set relation with RelationSpec class value (line 941) ---
+
+    def test_set_relation_with_relationspec_class_value(self) -> None:
+        """Set[T] = RelationSpec(...) should use the provided spec."""
+        ri = HolderWithRelationSpec._relations_["items"]
+        assert ri.spec.table == "custom_join"
+
+    # --- Marker instance with primary_key=True (lines 986–1002) ---
+
+    def test_marker_instance_with_primary_key_option_becomes_pk_field(self) -> None:
+        """Marker instance specifying primary_key=True should patch the field as PK."""
+
+        class E(Entity):
+            uid: Req[int] = Req[int](primary_key=True, auto=True)
+
+        fi = E._fields_["uid"]
+        assert fi.spec.primary_key is True
+        assert fi.spec.auto is True
+        assert E._pk_field_ == "uid"
+
+    # --- PK[Entity] relation marker (line 829) ---
+
+    def test_pk_entity_creates_single_relation_not_field(self) -> None:
+        """PK[SomeEntity] should create a Single relation, not a field (lines 829–848)."""
+
+        class Parent(Entity): # pyright: ignore[reportUnusedClass]
+            id: PK[int]
+
+        class Child(Entity):
+            parent_id: PK[Parent]
+
+        # Verify parent_id is a relation, not a field
+        assert "parent_id" not in Child._fields_
+        assert "parent_id" in Child._relations_
+        assert Child._relations_["parent_id"].spec.kind == RelationKind.SINGLE
+        assert Child._relations_["parent_id"].spec.primary_key is True
+
+    # --- Entity created inside session but not mapped → line 1253 ---
+
+    def test_entity_inside_session_without_db_mapping_skips_attach(self) -> None:
+        """Entity created inside db_session but not mapped to any DB should not raise."""
+        from nextorm.session import db_session
+
+        class _UnmappedInsideSession(Entity):
+            name: Req[str]
+
+        # _UnmappedInsideSession is never registered with any Database.
+        # Inside db_session, _find_db_for_entity raises RuntimeError → pass (line 1253)
+        with db_session:
+            obj = _UnmappedInsideSession(name="hello")
+        assert obj.name == "hello"

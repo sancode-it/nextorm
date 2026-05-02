@@ -87,7 +87,8 @@ def test_introspect_all_columns_present(mapped_db: Database) -> None:
 def test_introspect_nullable_column(mapped_db: Database) -> None:
     schema = introspect_sqlite(mapped_db._ensure_connection())
     col_map = {c.name: c for c in schema["blogpost"].columns}
-    assert col_map["body"].nullable is True
+    # Opt[str] is not nullable by default
+    assert col_map["body"].nullable is False
 
 
 def test_introspect_not_null_column(mapped_db: Database) -> None:

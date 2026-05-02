@@ -13,7 +13,7 @@ from nextorm.database import Database
 from nextorm.entity import Entity
 from nextorm.exceptions import MultipleObjectsFoundError, ObjectNotFound
 from nextorm.expr import ColumnExpr
-from nextorm.fields import PK, Opt, Req, Set, Single
+from nextorm.fields import PK, LongStr, Opt, Req, Set, Single
 from nextorm.query import QuerySet
 from nextorm.session import db_session
 from nextorm.sql.nodes import BinOp, ColumnRef, Literal, OrderItem, Param
@@ -801,20 +801,124 @@ def test_queryset_update_unknown_field_raises(seeded_db: Database) -> None:
 
 def test_optional_field_none(db: Database) -> None:
     with db_session:
-        Note(title="Hello")  # body not set → None
+        Note(title="Hello")  # body not set → ""
     loaded = db.select(Note).fetch_one()
     assert loaded is not None
     assert loaded.title == "Hello"
-    assert loaded.body is None
+    assert loaded.body == ""
+
+
+def test_opt_str_explicit_non_nullable_runtime(db: Database) -> None:
+    class NonNullDesc(Entity):
+        id: PK[int]
+        description: Opt[str] = Opt(nullable=False)
+
+    db2 = Database(entities=[NonNullDesc])
+    db2.bind("sqlite", ":memory:")
+    db2.generate_mapping(create_tables=True)
+    with db_session:
+        NonNullDesc(description="abc")
+    loaded = db2.select(NonNullDesc).fetch_one()
+    assert loaded is not None
+    assert loaded.description == "abc"
+    db2.close()
+
+
+def test_opt_longstr_nullable_and_non_nullable(db: Database) -> None:
+    class NullableLongStrEntity(Entity):
+        id: PK[int]
+        bio: Opt[LongStr] = Opt(nullable=True)
+
+    class NonNullLongStrEntity(Entity):
+        id: PK[int]
+        bio: Opt[LongStr]
+
+    db2 = Database(entities=[NullableLongStrEntity, NonNullLongStrEntity])
+    db2.bind("sqlite", ":memory:")
+    db2.generate_mapping(create_tables=True)
+    with db_session:
+        NullableLongStrEntity()
+        NonNullLongStrEntity()
+    loaded_a = db2.select(NullableLongStrEntity).fetch_one()
+    loaded_b = db2.select(NonNullLongStrEntity).fetch_one()
+    assert loaded_a is not None and loaded_a.bio is None
+    assert loaded_b is not None and loaded_b.bio == ""
+    db2.close()
+
+
+def test_opt_int_nullable_and_non_nullable(db: Database) -> None:
+    class OptIntEntity(Entity):
+        id: PK[int]
+        score: Opt[int]
+
+    class NonNullIntEntity(Entity):
+        id: PK[int]
+        score: Opt[int] = Opt(nullable=False)
+
+    db2 = Database(entities=[OptIntEntity, NonNullIntEntity])
+    db2.bind("sqlite", ":memory:")
+    db2.generate_mapping(create_tables=True)
+    with db_session:
+        OptIntEntity()
+        NonNullIntEntity(score=7)
+    loaded_a = db2.select(OptIntEntity).fetch_one()
+    loaded_b = db2.select(NonNullIntEntity).fetch_one()
+    assert loaded_a is not None and loaded_a.score is None
+    assert loaded_b is not None and loaded_b.score == 7
+    db2.close()
+
+
+def test_opt_float_nullable_and_non_nullable(db: Database) -> None:
+    class OptFloatEntity(Entity):
+        id: PK[int]
+        weight: Opt[float]
+
+    class NonNullFloatEntity(Entity):
+        id: PK[int]
+        weight: Opt[float] = Opt(nullable=False)
+
+    db2 = Database(entities=[OptFloatEntity, NonNullFloatEntity])
+    db2.bind("sqlite", ":memory:")
+    db2.generate_mapping(create_tables=True)
+    with db_session:
+        OptFloatEntity()
+        NonNullFloatEntity(weight=1.5)
+    loaded_a = db2.select(OptFloatEntity).fetch_one()
+    loaded_b = db2.select(NonNullFloatEntity).fetch_one()
+    assert loaded_a is not None and loaded_a.weight is None
+    assert loaded_b is not None and loaded_b.weight == 1.5
+    db2.close()
+
+
+def test_opt_bool_nullable_and_non_nullable(db: Database) -> None:
+    class OptBoolEntity(Entity):
+        id: PK[int]
+        indoor: Opt[bool]
+
+    class NonNullBoolEntity(Entity):
+        id: PK[int]
+        indoor: Opt[bool] = Opt(nullable=False)
+
+    db2 = Database(entities=[OptBoolEntity, NonNullBoolEntity])
+    db2.bind("sqlite", ":memory:")
+    db2.generate_mapping(create_tables=True)
+    with db_session:
+        OptBoolEntity()
+        NonNullBoolEntity(indoor=True)
+    loaded_a = db2.select(OptBoolEntity).fetch_one()
+    loaded_b = db2.select(NonNullBoolEntity).fetch_one()
+    assert loaded_a is not None and loaded_a.indoor is None
+    # SQLite stores bool as int (1)
+    assert loaded_b is not None and loaded_b.indoor in (True, 1)
+    db2.close()
 
 
 def test_filter_is_null(db: Database) -> None:
     with db_session:
-        Note(title="A")  # body = None
+        Note(title="A")  # body = ""
         Note(title="B", body="some text")
     results = db.select(Note).filter(Note.body.is_null()).fetch_all()
-    assert len(results) == 1
-    assert results[0].title == "A"
+    assert len(results) == 0  # No NULLs, only ""
 
 
 def test_filter_is_not_null(db: Database) -> None:
@@ -822,8 +926,7 @@ def test_filter_is_not_null(db: Database) -> None:
         Note(title="A")
         Note(title="B", body="text")
     results = db.select(Note).filter(Note.body.is_not_null()).fetch_all()
-    assert len(results) == 1
-    assert results[0].title == "B"
+    assert len(results) == 2  # Both rows, since no NULLs
 
 
 # ---------------------------------------------------------------------------

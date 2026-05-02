@@ -16,7 +16,7 @@ from nextorm.entity import (
     SingleDescriptor,
     _EntityIterator,
 )
-from nextorm.fields import FieldSpec, RelationKind, RelationSpec, Req, Set, Single
+from nextorm.fields import Local, RelationKind, RelationSpec, Req, Set, Single
 from nextorm.session import db_session
 
 # ---------------------------------------------------------------------------
@@ -42,16 +42,16 @@ class DescBook(Entity):
 class _VFEntity(Entity):
     """Entity with validated/transformed fields for descriptor tests."""
 
-    trimmed: Req[str] = FieldSpec(autostrip=True)  # type: ignore[assignment]
-    score: Req[int] = FieldSpec(min=0, max=100)  # type: ignore[assignment]
-    code: Req[str] = FieldSpec(py_check=lambda v: len(v) >= 3)  # type: ignore[assignment]
+    trimmed: Req[str] = Req(autostrip=True)
+    score: Req[int] = Req(min=0, max=100)
+    code: Req[str] = Req(py_check=lambda v: len(v) >= 3)  # pyright: ignore[reportUnknownLambdaType, reportUnknownArgumentType]
 
 
 class _LFEntity(Entity):
     """Entity with one lazy field for FieldDescriptor lazy-load tests."""
 
     name: Req[str]
-    bio: Req[str] = FieldSpec(lazy=True)  # type: ignore[assignment]
+    bio: Req[str] = Req(lazy=True)
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +430,7 @@ def test_py_check_invalid_value_raises_on_reassignment() -> None:
 def test_none_value_bypasses_all_validation() -> None:
     """None is always stored without running min/max/py_check (nullable pattern)."""
     e = _VFEntity(trimmed="x", score=50, code="abc")
-    e.score = None  # type: ignore[assignment]
+    e.score = None
     assert e.score is None
 
 
@@ -498,3 +498,101 @@ def test_lazy_field_cached_after_first_access() -> None:
     # sentinel is now replaced by the actual value
     assert vars(loaded)["_field_bio"] == "Bio text"
     db.close()
+
+
+# ---------------------------------------------------------------------------
+# LocalDescriptor — default values and py_check
+# ---------------------------------------------------------------------------
+
+
+class _DefaultLocal(Entity):
+    """Entity with Local fields that carry scalar and callable defaults."""
+
+    _flag: Local[bool] = Local(default=False)
+    _items: Local[list[str]] = Local(default=list)
+
+
+class _CheckedLocal(Entity):
+    """Entity with a Local field that validates values via py_check."""
+
+    _score: Local[int] = Local(py_check=lambda v: isinstance(v, int) and 0 <= v <= 100)  # pyright: ignore[reportUnknownLambdaType]
+
+
+class _NoDefaultLocal(Entity):
+    """Entity with a Local field that has no default — must be set before reading."""
+
+    _data: Local[str]
+
+
+def test_local_scalar_default_initialised_on_construction() -> None:
+    """A scalar default is applied during Entity.__init__ before any kwargs."""
+    obj = _DefaultLocal()
+    assert obj._flag is False
+
+
+def test_local_callable_default_called_per_instance() -> None:
+    """A callable default produces a fresh value for each instance."""
+    a = _DefaultLocal()
+    b = _DefaultLocal()
+    a._items.append("item")
+    assert b._items == []  # not shared
+
+
+def test_local_py_check_valid_value_passes() -> None:
+    obj = _CheckedLocal()
+    obj._score = 50
+    assert obj._score == 50
+
+
+def test_local_py_check_invalid_value_raises() -> None:
+    obj = _CheckedLocal()
+    with pytest.raises(ValueError, match="py_check"):
+        obj._score = 200
+
+
+def test_local_unset_without_default_raises_attribute_error() -> None:
+    """Reading an uninitialised Local field with no default raises AttributeError."""
+    obj = _NoDefaultLocal.__new__(_NoDefaultLocal)
+    with pytest.raises(AttributeError, match="has not been initialised"):
+        _ = obj._data
+
+
+def test_local_descriptor_delete_clears_value() -> None:
+    """Deleting a Local field removes it from instance.__dict__ without raising."""
+    obj = _DefaultLocal()
+    assert obj._flag is False
+    del obj._flag
+    # After deletion the field is gone from __dict__; accessing raises AttributeError
+    with pytest.raises(AttributeError):
+        _ = obj._flag
+
+
+def test_local_descriptor_delete_idempotent() -> None:
+    """Deleting an already-absent Local field must not raise."""
+    obj = _DefaultLocal.__new__(_DefaultLocal)
+    del obj._flag  # nothing to delete — must not raise
+
+
+# ---------------------------------------------------------------------------
+# PK descriptor placeholder tests
+# ---------------------------------------------------------------------------
+
+
+def test_pk_descriptor_get_raises_not_implemented() -> None:
+    """PK.__get__ is a placeholder that raises NotImplementedError."""
+    from nextorm.fields import PK
+
+    pk = PK() # type: ignore[var-annotated]
+    dummy_obj = object()
+    with pytest.raises(NotImplementedError):
+        pk.__get__(dummy_obj, type(dummy_obj))
+
+
+def test_pk_descriptor_set_raises_not_implemented() -> None:
+    """PK.__set__ is a placeholder that raises NotImplementedError."""
+    from nextorm.fields import PK
+
+    pk = PK() # type: ignore[var-annotated]
+    dummy_obj = object()
+    with pytest.raises(NotImplementedError):
+        pk.__set__(dummy_obj, 42) # pyright: ignore[reportUnknownMemberType]
