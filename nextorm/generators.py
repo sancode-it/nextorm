@@ -194,6 +194,8 @@ def _decompile_condition(code: types.CodeType, free_vars: dict[str, Any]) -> Sql
             "LOAD_FAST_AND_CLEAR",
             # Python 3.13: bool coercion before POP_JUMP
             "TO_BOOL",
+            # Python 3.14: loop-iteration cleanup (END_FOR equivalent)
+            "POP_ITER",
         ):
             i += 1
             continue
@@ -221,7 +223,8 @@ def _decompile_condition(code: types.CodeType, free_vars: dict[str, Any]) -> Sql
             i += 1
             continue
 
-        if op == "LOAD_CONST":
+        if op in ("LOAD_CONST", "LOAD_SMALL_INT"):
+            # LOAD_SMALL_INT is the Python 3.14 optimized opcode for small integers
             stack.append(_StackItem("name", instr.argval))
             i += 1
             continue
