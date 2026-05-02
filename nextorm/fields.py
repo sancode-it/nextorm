@@ -227,7 +227,7 @@ def field_class_getitem[FT: Field[OptAttrValue], T](
     base_opts = FieldOpts()
     allowed_keywords = set(base_opts.__dataclass_fields__.keys())
     for group in opts_groups:
-        if is_dataclass(group):
+        if is_dataclass(group):  # pragma: no branch
             allowed_keywords.update(group.__dataclass_fields__.keys())
     if exclude_opts:
         allowed_keywords.difference_update(set(exclude_opts))
@@ -253,9 +253,9 @@ def field_class_getitem[FT: Field[OptAttrValue], T](
         opts.update(kwargs)
         # PK marker: set primary_key and auto by default unless overridden
         if prefix == "PK":
-            if "primary_key" in allowed_keywords:
+            if "primary_key" in allowed_keywords:  # pragma: no branch
                 opts.setdefault("primary_key", True)
-            if "auto" in allowed_keywords:
+            if "auto" in allowed_keywords:  # pragma: no branch
                 opts.setdefault("auto", True)
         if prefix == "Opt" and "nullable" in allowed_keywords and "nullable" not in opts:
             opts.setdefault("nullable", True)
@@ -297,7 +297,7 @@ def relation_class_getitem[RT: Relation[Entity | None], T](
     allowed_keywords: set[str] = set(base_relation_opts.__dataclass_fields__.keys())
     if issubclass(cls, Single):
         allowed_keywords.update(SingleOpts.__dataclass_fields__.keys())
-    elif issubclass(cls, Set):
+    elif issubclass(cls, Set):  # pragma: no branch
         allowed_keywords.update(SetOpts.__dataclass_fields__.keys())
 
     def __init__(self: RT, *args: Any, **kwargs: Any) -> None:

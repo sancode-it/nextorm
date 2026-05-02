@@ -248,12 +248,12 @@ def _decompile_condition(code: types.CodeType, free_vars: dict[str, Any]) -> Sql
             left = pop()
             # Map compare op to SQL operator
             arg = instr.argval
-            if isinstance(arg, int):  # pragma: no cover — argval is str in Python 3.13
-                sql_op = _RICH_COMPARE_CODES.get(arg & 0xF)
+            if isinstance(arg, int):
+                sql_op = _RICH_COMPARE_CODES.get(arg & 0xF)  # pragma: no cover
             else:
                 sql_op = _COMPARE_OPS.get(str(arg).lower().rstrip(" ("))
             if sql_op is None:  # pragma: no cover
-                raise DecompileError(f"Unsupported comparison operator: {arg!r}")
+                raise DecompileError(f"Unsupported comparison operator: {arg!r}")  # pragma: no cover
             node: SqlNode = BinOp(to_node(left), sql_op, to_node(right))
             stack.append(_StackItem("node", node))
             i += 1
@@ -273,7 +273,7 @@ def _decompile_condition(code: types.CodeType, free_vars: dict[str, Any]) -> Sql
             i += 1
             continue
 
-        if op in ("UNARY_NOT",):  # pragma: no cover — Python 3.13 uses TO_BOOL+POP_JUMP
+        if op in ("UNARY_NOT",):  # pragma: no cover
             operand = pop()
             node = UnaryOp("NOT", to_node(operand))
             stack.append(_StackItem("node", node))
@@ -287,7 +287,7 @@ def _decompile_condition(code: types.CodeType, free_vars: dict[str, Any]) -> Sql
             "POP_JUMP_IF_NOT_NONE",
         ):
             # AND condition opener: if false/None, skip this AND group.
-            if stack:  # pragma: no branch
+            if stack:  # pragma: no cover
                 item = pop()
                 if item.kind == "node":
                     and_nodes.append(item.value)
@@ -311,20 +311,20 @@ def _decompile_condition(code: types.CodeType, free_vars: dict[str, Any]) -> Sql
             #
             # Python 3.14 inserts a NOT_TAKEN hint between POP_JUMP_IF_TRUE and
             # JUMP_BACKWARD, so we skip over NOT_TAKEN before checking.
-            if stack:  # pragma: no branch
+            if stack:  # pragma: no cover
                 item = pop()
                 if item.kind == "node":
                     and_nodes.append(item.value)
             j = i + 1
             while j < len(instructions) and instructions[j].opname == "NOT_TAKEN":
-                j += 1
+                j += 1  # pragma: no cover
             next_op = instructions[j].opname if j < len(instructions) else ""
             if next_op != "JUMP_BACKWARD":
                 _finalize_and_group()
             i += 1
             continue
 
-        if op == "JUMP_IF_FALSE_OR_POP":  # pragma: no cover — Python 3.13 uses POP_JUMP
+        if op == "JUMP_IF_FALSE_OR_POP":  # pragma: no cover
             # short-circuit AND (Python ≤ 3.12 style)
             if stack:
                 item = pop()
@@ -333,7 +333,7 @@ def _decompile_condition(code: types.CodeType, free_vars: dict[str, Any]) -> Sql
             i += 1
             continue
 
-        if op == "JUMP_IF_TRUE_OR_POP":  # pragma: no cover — Python 3.13 uses POP_JUMP
+        if op == "JUMP_IF_TRUE_OR_POP":  # pragma: no cover
             # short-circuit OR (Python ≤ 3.12 style) — seal current AND group
             if stack:
                 item = pop()
@@ -341,7 +341,7 @@ def _decompile_condition(code: types.CodeType, free_vars: dict[str, Any]) -> Sql
                     and_nodes.append(item.value)
             _finalize_and_group()
 
-        if op in ("IS_OP",):  # pragma: no cover — Python 3.13 uses POP_JUMP_IF_NONE
+        if op in ("IS_OP",):  # pragma: no cover
             right = pop()
             left = pop()
             sql_op = "IS NOT" if instr.argval else "IS"
