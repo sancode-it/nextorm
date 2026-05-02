@@ -77,7 +77,7 @@ Declare ``Set[T]`` on **both** entities. NextORM infers a join table automatical
        tags: Set[Tag]
 
 The join table name is derived from the two entity names sorted alphabetically
-(e.g. ``product_tag``). You can customise it with :class:`~nextorm.fields.RelationSpec`.
+(e.g. ``product_tag``). You can customise it with ``Set(table=...)``.
 
 Accessing collections
 ---------------------
@@ -218,16 +218,14 @@ iterating over collections.
 Custom FK column name
 ----------------------
 
-Use :class:`~nextorm.fields.RelationSpec` to override the default
+Use the ``column=`` option on ``Single(...)`` to override the default
 ``<attr>_id`` column name:
 
 .. code-block:: python
 
-   from nextorm.fields import RelationSpec
-
    class Comment(Entity):
        text: Req[str]
-       post: Single[Post] = RelationSpec(column="fk_post")
+       post: Single[Post] = Single(column="fk_post")
 
 Custom join-table name
 -----------------------
@@ -236,7 +234,7 @@ Custom join-table name
 
    class Product(Entity):
        name: Req[str]
-       tags: Set[Tag] = RelationSpec(table="product_tags")
+       tags: Set[Tag] = Set(table="product_tags")
 
 Reverse back-reference
 -----------------------
@@ -252,8 +250,59 @@ When two entities have multiple relations to each other, specify the
 
    class Post(Entity):
        title:  Req[str]
-       author: Single[User] = RelationSpec(reverse="authored")
-       editor: Single[User] = RelationSpec(reverse="edited")
+       author: Single[User] = Single(reverse="authored")
+       editor: Single[User] = Single(reverse="edited")
+
+Customizing relations
+---------------------
+
+Pass keyword arguments directly to the marker to override default behaviour:
+
+**Foreign key column name** (``Single`` only):
+
+.. code-block:: python
+
+   class Comment(Entity):
+       text: Req[str]
+       post: Single[Post] = Single(column="post_fk")  # Column named "post_fk" not "post_id"
+
+**Join table name** (many-to-many only):
+
+.. code-block:: python
+
+   class Product(Entity):
+       tags: Set[Tag] = Set(table="product_has_tag")
+
+**Join table column names** (many-to-many only):
+
+.. code-block:: python
+
+   class Product(Entity):
+       tags: Set[Tag] = Set(
+           reverse_column="tag_id",  # Column pointing to Tag
+           column="product_id"       # Column pointing to Product
+       )
+
+**Cascade delete behaviour**:
+
+.. code-block:: python
+
+   class Tenant(Entity):
+       name: Req[str]
+
+   class User(Entity):
+       # Optional FK; normally SET NULL on delete. Force CASCADE instead:
+       tenant: Single[Tenant | None] = Single(cascade_delete=True)
+
+**One-to-one ownership** (both sides declare ``Single``):
+
+.. code-block:: python
+
+   class User(Entity):
+       profile: Single["Profile"] = Single(owner=True)  # This side has the FK
+
+   class Profile(Entity):
+       user: Single[User]  # Back-reference; no FK column here
 
 Schema generation
 -----------------

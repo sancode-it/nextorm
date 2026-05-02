@@ -201,18 +201,18 @@ Use the :func:`~nextorm.fields.PrimaryKey` helper as a class attribute:
 Default values
 --------------
 
-Assign a plain value or a callable as the default:
+Assign a plain value or a callable as the default by calling the marker with
+the ``default=`` option:
 
 .. code-block:: python
 
    from datetime import datetime
    from nextorm import Entity, Req
-   from nextorm.fields import FieldSpec
 
    class Comment(Entity):
        text:       Req[str]
-       created_at: Req[datetime] = FieldSpec(default=datetime.utcnow)
-       score:      Req[int]      = FieldSpec(default=0)
+       created_at: Req[datetime] = Req(default=datetime.utcnow)
+       score:      Req[int]      = Req(default=0)
 
 .. note::
 
@@ -223,15 +223,13 @@ Assign a plain value or a callable as the default:
 Custom column names
 -------------------
 
-By default the column name is the attribute name. Override it with
-:class:`~nextorm.fields.FieldSpec`:
+By default the column name is the attribute name. Override it with the
+``column=`` option on the marker:
 
 .. code-block:: python
 
-   from nextorm.fields import FieldSpec
-
    class User(Entity):
-       first_name: Req[str] = FieldSpec(column="fname")
+       first_name: Req[str] = Req(column="fname")
 
 Custom table names
 ------------------
@@ -254,7 +252,7 @@ Single-column unique constraint:
 .. code-block:: python
 
    class User(Entity):
-       email: Req[str] = FieldSpec(unique=True)
+       email: Req[str] = Req(unique=True)
 
 Multi-column constraints use the helpers at class level:
 
@@ -301,6 +299,37 @@ Special column types
        metadata:  Opt[Json]
        published: Opt[DateTimeTz]
        embedding: Req[Vec[384]]      # pgvector column
+
+Local (transient) fields
+------------------------
+
+Use :class:`~nextorm.fields.Local[T]` to attach computed or cached state to an instance.
+Local fields are **never** written to or read from the database — they live in
+``instance.__dict__`` only.  They are safe to initialise in lifecycle hooks:
+
+.. code-block:: python
+
+   from nextorm import Entity, Req, Local
+
+   class User(Entity):
+       name: Req[str]
+       _full_name: Local[str]           # computed value
+       _cache: Local[dict] = Local[dict](default=dict)  # factory default
+
+   user = User(name="Alice")
+   user._full_name = "Dr. Alice"  # set manually
+   user._cache["key"] = "value"
+
+**Options** (passed as ``Local[T](…)``):
+
+- ``default``: Value or callable; invoked on ``Entity()`` construction
+- ``py_check``: Callable that validates the value; receives the value, should raise or return falsy on failure
+
+.. code-block:: python
+
+   class Task(Entity):
+       priority: Req[int]
+       _validated_priority: Local[int] = Local[int](py_check=lambda x: 1 <= x <= 5)
 
 Lifetime hooks
 --------------
@@ -536,3 +565,168 @@ Raw SQL class methods
 
 These are thin wrappers around ``db.select(Entity).raw(sql, params)`` and
 ``db.select(Entity).raw_one(sql, params)``.
+
+Positional argument shorthands
+------------------------------
+
+For the most common type-specific options, scalar markers accept a positional
+argument so you can skip the keyword name:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 30 30
+
+   * - Full keyword form
+     - Shorthand
+     - Positional arg(s)
+   * - ``Req[str](max_len=128)``
+     - ``Req[str](128)``
+     - ``max_len``
+   * - ``Opt[str](max_len=64)``
+     - ``Opt[str](64)``
+     - ``max_len``
+   * - ``Req[int](size=32)``
+     - ``Req[int](32)``
+     - ``size``
+   * - ``Req[float](tolerance=0.01)``
+     - ``Req[float](0.01)``
+     - ``tolerance``
+   * - ``Req[Decimal](precision=10, scale=2)``
+     - ``Req[Decimal](10, 2)``
+     - ``precision``, ``scale``
+   * - ``Req[datetime](precision=3)``
+     - ``Req[datetime](3)``
+     - ``precision``
+   * - ``Req[Vec](dimensions=384)``
+     - ``Req[Vec](384)``
+     - ``dimensions``
+   * - ``Req[uuid7](uuid_auto="v7")``
+     - ``Req[uuid7]("v7")``
+     - ``uuid_auto``
+
+Applies equally to ``Opt[T]``, ``PK[T]``, and ``Req[T]`` where the type
+supports it (e.g. ``Opt[str](128)`` also works).
+
+Field and Relation Marker Options
+---------------------------------
+
+Options for scalar fields (``PK``, ``Req``, ``Opt``):
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Column naming and SQL mapping**
+
+* ``column``: str | None
+    Override the database column name for this field (default: attribute name).
+* ``sql_type``: str | None
+    Override inferred SQL type string (e.g. "JSONB").
+* ``sql_default``: str | None
+    Raw SQL expression for DDL DEFAULT (e.g. "CURRENT_TIMESTAMP").
+
+**Primary key and uniqueness**
+
+* ``primary_key``: bool
+    Mark as primary key (implied by PK[]).
+* ``unique``: bool
+    Add a unique constraint on this column.
+* ``index``: bool
+    Create a non-unique index on this column.
+* ``auto``: bool
+    Auto-incrementing integer (PK[int] only).
+* ``uuid_auto``: str | None
+    "v7", "v4", or "ulid" — Python-side UUID/ULID auto-generation.
+
+**Nullability and defaults**
+
+* ``nullable``: bool
+    Allow NULL values (implied by Opt[]).
+* ``default``: Any
+    Python-side default value or factory (callable or value).
+
+**Type-specific options**
+
+* ``max_len``: int | None
+    For str: Maximum string length.
+* ``precision``: int | None
+    For Decimal: total significant digits.
+* ``scale``: int | None
+    For Decimal: digits after decimal point.
+* ``unsigned``: bool
+    For int: UNSIGNED modifier (MariaDB only).
+* ``size``: int | None
+    For int: column bit width — 8, 16, 32, or 64.
+* ``dimensions``: int | None
+    For Vec: number of vector dimensions (e.g. 384, 1536).
+
+**Validation and assignment**
+
+* ``py_check``: Callable[[object], bool] | None
+    Callable validator; receives value; raises/returns falsy on failure.
+* ``autostrip``: bool
+    Strip leading/trailing whitespace on string assignment.
+* ``min``: Any
+    Inclusive lower bound for numeric/comparable fields.
+* ``max``: Any
+    Inclusive upper bound for numeric/comparable fields.
+
+**Other**
+
+* ``lazy``: bool
+    Deferred loading: field excluded from main SELECT; loaded on first access.
+* ``volatile``: bool
+    Excluded from UPDATE; value is set by a DB trigger.
+
+Options for relations (``Single``, ``Set``):
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Nullability and constraints**
+
+* ``nullable``: bool
+    Allow NULL values (Single only).
+* ``primary_key``: bool
+    Mark as primary key (Single only).
+* ``cascade_delete``: bool | None
+    Override ON DELETE action (True=CASCADE, False=RESTRICT, None=auto).
+
+**Foreign key and join table mapping**
+
+* ``column``: str | None
+    Override the database column name for the FK (Single only).
+* ``columns``: list[str] | None
+    Composite FK column names (Single only).
+* ``fk_name``: str | None
+    Override the foreign key constraint name (Single only).
+* ``table``: str | None
+    Override the join table name for M2M (Set only).
+* ``reverse_column``: str | None
+    Override the join table column name for the reverse side (Set only).
+* ``reverse_columns``: list[str] | None
+    Composite join table column names for the reverse side (Set only).
+
+**Relation ownership**
+
+* ``owner``: bool | None
+    O2O only: explicit owning-side override (rarely needed; advanced usage).
+
+**Reverse relation**
+
+* ``reverse``: str | None
+    Name of the reverse relation on the target entity.
+
+Examples:
+
+.. code-block:: python
+
+   class Product(Entity):
+       id:    PK[int]
+       name:  Req[str](column="product_name", max_len=100, unique=True)
+       # or using the positional shorthand:
+       short: Req[str](128)          # max_len=128
+
+   class Order(Entity):
+       product: Single[Product] = Single(column="prod_id", fk_name="fk_order__prod_id", nullable=False)
+
+   class Tag(Entity):
+       products: Set[Product] = Set(reverse_column="tag_ref_id", table="product_tag_link")
+
+   class CatalogProduct(Entity):
+       tags: Set[Tag] = Set(reverse_column="product_ref_id")

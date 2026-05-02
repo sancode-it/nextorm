@@ -12,14 +12,14 @@ Workflow
 .. code-block:: text
 
    # 1. Generate a migration file from the current entity schema diff
-   python -m nextorm.migrations.cli makemigrations --directory migrations/
+   python -m nextorm.migrations.cli makemigrations --module myapp.models
 
    # 2. Review and edit the generated migration if needed
    # 3. Apply all pending migrations
-   python -m nextorm.migrations.cli migrate --directory migrations/
+   python -m nextorm.migrations.cli migrate --module myapp.models
 
    # 4. Check which migrations have been applied
-   python -m nextorm.migrations.cli showmigrations --directory migrations/
+   python -m nextorm.migrations.cli showmigrations --module myapp.models
 
 Or use the PDM shorthand (if configured in your pyproject.toml):
 
@@ -63,14 +63,16 @@ by the runner.
 CLI reference
 -------------
 
-All commands accept ``--directory`` (default ``migrations/``) and
-``--database-url`` (or set the ``DATABASE_URL`` environment variable).
+All commands require ``--module`` (the Python module that defines and binds the
+:class:`~nextorm.database.Database` object) and accept ``--db-attr`` (attribute
+name in the module, default ``db``) and ``--directory`` (default
+``migrations/``).
 
 .. code-block:: text
 
-   python -m nextorm.migrations.cli makemigrations [--directory PATH] [--name LABEL]
-   python -m nextorm.migrations.cli migrate        [--directory PATH] [--fake]
-   python -m nextorm.migrations.cli showmigrations [--directory PATH]
+   python -m nextorm.migrations.cli makemigrations --module myapp.models [--db-attr db] [--directory PATH] [--name LABEL]
+   python -m nextorm.migrations.cli migrate        --module myapp.models [--db-attr db] [--directory PATH] [--fake]
+   python -m nextorm.migrations.cli showmigrations --module myapp.models [--db-attr db] [--directory PATH]
 
 ``makemigrations``
 ~~~~~~~~~~~~~~~~~~

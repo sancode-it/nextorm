@@ -45,9 +45,11 @@ class Tag(Entity):
     products: Set["Product"]   # many-to-many back-reference
 
 class Product(Entity):
-    name:  Req[str]
-    price: Req[float]
-    tags:  Set[Tag]    # many-to-many
+    name:    Req[str](64)      # positional shorthand: max_len=64
+    price:   Req[float]
+    sku:     Req[str] = Req(column="product_sku", unique=True)  # marker-call options
+    tags:    Set[Tag]  # many-to-many
+    summary: Opt[str]  # Opt[str]/[LongStr] use empty string for None by default
 
 # Create and connect the database
 db = Database(entities=[Tag, Product])  # entities can also be auto-discovered
@@ -57,7 +59,7 @@ db.generate_mapping(create_tables=True)
 # Write — entities are tracked and committed automatically
 with db_session:
     t = Tag(name="sale")
-    p = Product(name="Widget", price=9.99)
+    p = Product(name="Widget", price=9.99, sku="WGT-1")
     p.tags.add(t)
 # ← INSERT fires here; p.id and t.id are now set
 

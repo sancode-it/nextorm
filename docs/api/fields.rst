@@ -48,6 +48,12 @@ described here manually.  See :doc:`../entities` for usage examples.
 
       class User(Entity):
           _full_name: Local[str]
+          _cache: Local[dict] = Local[dict](default=dict)
+
+   **Options** (passed as ``Local[T](…)``):
+
+   - ``default``: Value or callable returned on ``Entity()`` construction
+   - ``py_check``: Callable that validates the value on assignment
 
 .. py:class:: nextorm.fields.Set[T]
 
@@ -56,6 +62,12 @@ described here manually.  See :doc:`../entities` for usage examples.
    Declare ``Set[Child]`` on the *one* side and ``Single[Parent]`` on the *many* side for
    one-to-many; declare ``Set[Other]`` on **both** entities for many-to-many.
 
+   **Options** (passed as ``Set[T](…)``):
+
+   - ``table``: (M2M only) Override join table name; defaults to ``{a}_{b}`` (alphabetical)
+   - ``reverse_column``: (M2M only) Override the FK column name to this entity; defaults to ``{entity_name}_id``
+   - ``reverse_columns``: (M2M only) Override the composite FK column names; overrides ``reverse_column``
+
 .. py:class:: nextorm.fields.Single[T]
 
    Single-entity relation attribute (FK).
@@ -63,6 +75,15 @@ described here manually.  See :doc:`../entities` for usage examples.
    Use ``Single[Other]`` for a required FK (NOT NULL, CASCADE).
    Use ``Single[Other | None]`` for an optional FK (NULLABLE, SET NULL).
    When both sides use ``Single``, a UNIQUE constraint is added (one-to-one).
+
+   **Options** (passed as ``Single[T](…)``):
+
+   - ``nullable``: Override the nullability (defaults to auto-detect from ``T | None``)
+   - ``cascade_delete``: ``True`` for CASCADE, ``False`` for RESTRICT, ``None`` (default) for auto-derive from nullable
+   - ``owner``: (one-to-one only) ``True`` to mark as owning side (has FK), ``False`` as non-owning, ``None`` (default) for auto-detect
+   - ``fk_name``: Custom FK constraint name (defaults to auto-generated ``fk_…``)
+   - ``column``: Override the FK column name; defaults to ``{relation_name}_id``
+   - ``columns``: Override the composite FK column names; overrides ``column``
 
 Special column types
 --------------------
@@ -83,6 +104,13 @@ UUID / ULID types
 
 Metadata classes
 ----------------
+
+:class:`~nextorm.fields.FieldSpec` and :class:`~nextorm.fields.RelationSpec`
+are the internal dataclasses that hold the resolved field configuration after
+:class:`~nextorm.entity.EntityMeta` processes the class body.  They are exposed
+publicly for introspection (e.g. ``Entity._fields_["name"].spec``) but should
+not be used directly as class-body values — use the marker-call syntax
+(``Req(...)``, ``Opt(...)``, ``Single(...)``, etc.) instead.
 
 .. autoclass:: nextorm.fields.FieldSpec
    :members:

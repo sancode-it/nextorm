@@ -65,6 +65,17 @@ sides.  NextORM requires an explicit ``Single[T]`` (FK side) and ``Set[T]``
 ``Single[T]`` creates a ``NOT NULL`` FK with ``ON DELETE CASCADE``.
 ``Single[T | None]`` creates a nullable FK with ``ON DELETE SET NULL``.
 
+To override defaults (FK column name, join table, cascade behaviour) pass
+keyword arguments directly to the marker:
+
+.. code-block:: python
+
+   class Comment(Entity):
+       post: Single[Post] = Single(column="fk_post", cascade_delete=True)
+
+   class Product(Entity):
+       tags: Set[Tag] = Set(table="product_has_tag")
+
 Querying
 --------
 
