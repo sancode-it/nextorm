@@ -1,6 +1,31 @@
 Changelog
 =========
 
+0.2.2 — not released yet
+------------------------
+
+- nothing yet — stay tuned!
+
+0.2.1 — 2026-05-03
+-------------------
+
+**New features:**
+
+- Add ``Entity.flush()`` and ``Entity.commit()`` — convenience helpers
+  to persist a single entity or persist and commit it
+
+**Tests:**
+
+- Add unit tests for ``Entity.flush()`` and ``Entity.commit()``
+
+**Docs & tooling:**
+
+- Add documentation for Composite constraints
+- Fix docstrings for field markers
+- Document per-entity flush/commit usage in the entities guide.
+- Add developer tooling: `.github/skills/fix-type-leak` to help triage
+  and fix type errors leaking into consumer projects
+
 0.2.0 — 2026-05-02
 -------------------
 
@@ -30,8 +55,6 @@ Changelog
 
 - **Removed ``async_db_session`` alias.** Use :func:`~nextorm.session.db_session`
   for both sync and async contexts — it is identical.
-
-**New features:**
 
 - **Positional argument shorthands** for scalar field markers.  The most common
   type-specific option can now be passed as the first (or second) positional
