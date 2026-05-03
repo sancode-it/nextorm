@@ -92,7 +92,7 @@ class Holder(Entity):
 
 class HolderWithRelationSpec(Entity):
     name: Req[str]
-    items: Set[Item] = RelationSpec(kind=RelationKind.SET, target=Item, table="custom_join") # type: ignore[assignment]
+    items: Set[Item] = RelationSpec(kind=RelationKind.SET, target=Item, table="custom_join")  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------

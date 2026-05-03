@@ -582,7 +582,7 @@ def test_pk_descriptor_get_raises_not_implemented() -> None:
     """PK.__get__ is a placeholder that raises NotImplementedError."""
     from nextorm.fields import PK
 
-    pk = PK() # type: ignore[var-annotated]
+    pk = PK()  # type: ignore[var-annotated]
     dummy_obj = object()
     with pytest.raises(NotImplementedError):
         pk.__get__(dummy_obj, type(dummy_obj))
@@ -592,7 +592,7 @@ def test_pk_descriptor_set_raises_not_implemented() -> None:
     """PK.__set__ is a placeholder that raises NotImplementedError."""
     from nextorm.fields import PK
 
-    pk = PK() # type: ignore[var-annotated]
+    pk = PK()  # type: ignore[var-annotated]
     dummy_obj = object()
     with pytest.raises(NotImplementedError):
-        pk.__set__(dummy_obj, 42) # pyright: ignore[reportUnknownMemberType]
+        pk.__set__(dummy_obj, 42)  # pyright: ignore[reportUnknownMemberType]
