@@ -499,10 +499,10 @@ class Req[T: AttrValue](Field[T]):
 
     .. code-block:: python
 
-        class Product(Entity):
-            name: Req[str] = Req[str](max_len=120, unique=True)
-            stock: Req[int] = Req[int](default=0, min=0)
-            slug: Req[str] = Req[str](unique=True, index=True)
+        class Product(Entity):commit 
+            name: Req[str] = Req(max_len=120, unique=True)
+            stock: Req[int] = Req(default=0, min=0)
+            slug: Req[str] = Req(unique=True, index=True)
 
     **Type-specific positional shorthand** (first positional arg maps to the
     primary type option):
@@ -526,8 +526,8 @@ class Req[T: AttrValue](Field[T]):
     .. code-block:: python
 
         class Invitation(Entity):
-            token: Req[uuid7] = Req[uuid7](unique=True)  # uuid_auto="v7" — auto-generated
-            manual: Req[uuid7] = Req[uuid7](unique=True, uuid_auto=None)  # you set it
+            token: Req[uuid7] = Req(unique=True)  # uuid_auto="v7" — auto-generated
+            manual: Req[uuid7] = Req(unique=True, uuid_auto=None)  # you set it
             recipient: Single[User]
 
     For non-unique, non-PK UUID fields ``uuid_auto`` is always ``None`` regardless
@@ -550,7 +550,7 @@ class Opt[T: OptAttrValue](Field[T]):
 
         class Article(Entity):
             subtitle: Opt[str]  # NOT NULL, empty string allowed
-            description: Opt[str] = Opt[str](nullable=True)  # NULLable
+            description: Opt[str] = Opt(nullable=True)  # NULLable
             published_at: Opt[datetime]  # NULLable (non-string default)
 
     All options accepted by :class:`Req` are available on ``Opt`` as well,
@@ -599,7 +599,7 @@ class Single[E: Entity | None](Relation[E]):
 
 
         class User(Entity):
-            profile: Single[UserProfile] = Single[UserProfile](owner=False)
+            profile: Single[UserProfile] = Single(owner=False)
 
     **Options** — pass as keyword arguments to the subscripted marker:
 
@@ -733,15 +733,15 @@ class Local[T](Marker[T]):
 
         class Order(Entity):
             total: Req[float]
-            _cache: Local[dict] = Local[dict](default=dict)  # factory
-            _verified: Local[bool] = Local[bool](default=False)  # scalar
+            _cache: Local[dict] = Local(default=dict)  # factory
+            _verified: Local[bool] = Local(default=False)  # scalar
 
     **With validation** — ``py_check`` runs on every assignment:
 
     .. code-block:: python
 
         class Report(Entity):
-            _score: Local[float] = Local[float](
+            _score: Local[float] = Local(
                 default=0.0,
                 py_check=lambda v: 0.0 <= v <= 1.0,
             )
@@ -813,9 +813,9 @@ class FieldSpec:
     .. code-block:: python
 
         class Product(Entity):
-            name: Req[str] = Req[str](max_len=120, unique=True)
-            price: Req[float] = Req[float](min=0.0)
-            updated_at: Req[datetime] = FieldSpec(volatile=True, sql_default="CURRENT_TIMESTAMP")
+            name: Req[str] = Req(max_len=120, unique=True)
+            price: Req[float] = Req(min=0.0)
+            updated_at: Req[datetime] = Req(volatile=True, sql_default="CURRENT_TIMESTAMP")
 
     Parameters
     ----------
@@ -1180,7 +1180,7 @@ class LongStr(str):
     .. code-block:: python
 
         class Article(Entity):
-            body: Req[LongStr] = Req[LongStr](lazy=False)
+            body: Req[LongStr] = Req(lazy=False)
     """
 
     pass
@@ -1223,15 +1223,15 @@ class Vec:
     Maps to ``vector(n)`` (PostgreSQL with pgvector extension), ``TEXT``
     (MariaDB / SQLite — JSON-serialised list).
 
-    Specify the dimension by subscripting::
+    Specify the dimension with positional argument ::
 
         class Article(Entity):
             embedding: Req[Vec[384]]
 
-    Alternatively use ``FieldSpec(dimensions=n)`` explicitly::
+    Alternatively use ``Req(dimensions=n)`` explicitly::
 
         class Article(Entity):
-            embedding: Req[Vec] = FieldSpec(dimensions=384)
+            embedding: Req[Vec] = Req(dimensions=384)
     """
 
     _dimensions_: int | None = None
