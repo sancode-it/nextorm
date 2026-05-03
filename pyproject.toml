@@ -27,10 +27,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/sancode-it/nextorm"
+Homepage = "https://github.com/sancode-it/nextorm/blob/main/README.md"
 Repository = "https://github.com/sancode-it/nextorm"
 Documentation = "https://nextorm.readthedocs.io/en/latest/"
-Changelog = "https://github.com/sancode-it/nextorm/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/sancode-it/nextorm/blob/main/CHANGELOG.rst"
 
 [project.optional-dependencies]
 sqlite = ["aiosqlite>=0.20"]
