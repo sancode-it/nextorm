@@ -266,9 +266,60 @@ Multi-column constraints use the helpers at class level:
        seat:     Req[str]
 
        # unique (user_id, event_id, seat) combination
-       unq = composite_key("user_id", "event_id", "seat")
+       _unq_user_event_seat = composite_key("user_id", "event_id", "seat")
        # non-unique index on (user_id, event_id) for fast lookups
-       idx = composite_index("user_id", "event_id")
+       _idx_user_event = composite_index("user_id", "event_id")
+
+**Constraint assignment naming** — The class-attribute name (``_unq_*``,
+``_idx_*``) is used only for internal metaclass discovery and developer
+clarity. The name must:
+
+- Start with a prefix: ``_unq_`` for unique keys, ``_idx_`` for indexes, ``_pk_`` for primary keys
+- Follow with the involved attribute names joined by underscores
+- Be a valid Python identifier (lowercase, alphanumeric + underscores)
+- Be unique within the class if declaring multiple constraints
+
+Examples:
+
+.. code-block:: python
+
+   class Order(Entity):
+       customer_id: Req[int]
+       date: Req[datetime]
+       status: Req[str]
+       
+       # Composite primary key on two foreign keys
+       _pk_ = PrimaryKey("customer", "date")
+       # Unique constraint
+       _ck_customer_date = composite_key("customer_id", "date")
+       # Index for range queries
+       _idx_date_status = composite_index("date", "status")
+
+**Automatic constraint naming** — The database constraint and index names are
+auto-generated from the table name and column names; they follow these patterns:
+
+.. code-block:: python
+
+   fk_<table>__<column>          # Foreign key
+   unq_<table>__<col1>__<col2>   # Unique constraint (multi-column)
+   idx_<table>__<col1>__<col2>   # Non-unique index (multi-column)
+   idx_<table>__<column>         # Single-column index
+
+**Override FK names only** — You can explicitly override foreign key constraint
+names via the ``fk_name`` option on ``Single`` relations:
+
+.. code-block:: python
+
+   class Comment(Entity):
+       # Auto-generated name: fk_comment__post_id
+       post: Single[Post]
+       
+       # Custom FK name
+       author: Single[User] = Single(fk_name="fk_comment_author")
+
+Composite constraint names (from ``PrimaryKey``, ``composite_key``,
+``composite_index``) and single-column index names are always auto-generated
+— they cannot be overridden.
 
 Special column types
 --------------------

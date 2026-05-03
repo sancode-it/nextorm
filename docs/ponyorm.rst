@@ -39,6 +39,54 @@ calls; NextORM uses type annotations:
 The table name defaults to the class name lower-cased (same as PonyORM).
 Override it with ``_table_name_ = "my_table"``.
 
+Composite constraints
+~~~~~~~~~~~~~~~~~~~~~
+
+PonyORM accepts field **attributes** directly in ``PrimaryKey``, ``composite_index``,
+and ``composite_unique`` because it can resolve them at class-definition time.
+NextORM uses **attribute name strings** instead:
+
+.. code-block:: python
+
+   # PonyORM — field objects passed directly
+   class OrderLine(db.Entity):
+       order   = Required(Order)
+       product = Required(Product)
+       PrimaryKey(order, product)
+
+   # NextORM — attribute names as strings, assigned to a class attribute
+   class OrderLine(Entity):
+       order:   Single[Order]
+       product: Single[Product]
+       _pk_ = PrimaryKey("order", "product")   # Must be assigned to a class attribute
+
+**Why the assignment?** In PonyORM, the constraint call is executed for its
+side effects — the metaclass captures it implicitly. In NextORM, the call
+returns a ``CompositeConstraint`` object that must be stored as a class attribute
+so ``EntityMeta`` can discover it during class construction. The underscore prefix
+signals it's metadata, not part of the entity's public interface.
+
+The same applies to ``composite_key`` (unique constraint) and
+``composite_index`` (non-unique index):
+
+.. code-block:: python
+
+   # PonyORM
+   class Booking(db.Entity):
+       slot = Required(int)
+       room = Required(int)
+       composite_key(slot, room)
+
+   # NextORM
+   class Booking(Entity):
+       slot: Req[int]
+       room: Req[int]
+       _unq_slot_room_ = composite_key("slot", "room")
+
+The class-attribute name (``_pk_``, ``_unq_*``, ``_idx_*``) is only used for
+internal discovery; the name itself is not persisted or reflected in DDL.
+See the entities documentation for naming conventions.
+
 Relations
 ---------
 
