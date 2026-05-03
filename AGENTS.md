@@ -1,7 +1,10 @@
 # Agent Instructions for NextORM
 
 NextORM is a modern Python ORM with async support, full type annotations, and a
-PonyORM-inspired query DSL. Minimum Python version: **3.12**.
+PonyORM-inspired query DSL. Minimum Python version: **3.12** (tested on 3.12–3.14).
+
+**v0.2 API**: Field declarations use marker-call syntax (`Req(...)`, `Opt(...)`, `Single(...)`,
+`Set(...)`, `Local(...)`) instead of `FieldSpec`/`RelationSpec` class-body definitions.
 
 ---
 
@@ -44,10 +47,13 @@ nextorm/              Source package
   database.py         Sync Database class
   async_database.py   AsyncDatabase + AsyncQuerySet
   query.py            QuerySet (sync)
-  fields.py           Field markers: PK, Req, Opt, Set, Single, Local, FieldSpec, …
-  session.py          db_session context manager / decorator, flush/commit/rollback
+  fields.py           Field markers: PK, Req, Opt, Set, Single, Local
+                      (FieldSpec/RelationSpec for advanced/internal use)
+  session.py          db_session context manager / decorator (sync & async)
+                      flush/commit/rollback
   collection.py       RelatedCollection (lazy + prefetch collections)
   generators.py       Generator-expression query front-end (select/avg/sum/…)
+                      Bytecode decompiler (Python 3.12–3.14 compatible)
   expr.py             ColumnExpr descriptor for column-level query nodes
   sql/                SQL AST nodes + builder (SQLiteBuilder, PostgresBuilder, …)
   schema/             DDL renderer + schema introspection
@@ -117,6 +123,46 @@ the CLI entry points (also available as `MigrationRunner` in Python).
 Migration files live in a configurable directory; a `_migration_history` table
 tracks applied versions.
 
+### Field Markers (v0.2)
+
+**Scalar markers:**
+- `Req[T]` — required field; supports positional arg: `Req[str](max_len)`, `Req[int](size)`
+- `Opt[T]` — optional field (nullable); same positional args as `Req[T]`
+  - **Special behavior:** `Opt[str]` and `Opt[LongStr]` store as empty strings by default; only `nullable=True` allows NULL
+  - **All other `Opt[T]`** are nullable (allow NULL) by default
+- `Local[T]` — transient field (not persisted); supports `default` and `py_check` callable
+- `PK[T]` — primary key; if `T` is an `Entity`, creates a `Single` relation
+
+**Relation markers:**
+- `Single[Entity]` — one-to-one or many-to-one
+- `Set[Entity]` — one-to-many or many-to-many
+
+**Relation options** (`Single` and `Set`):
+- `column` — override FK column name (Single only)
+- `reverse_column` — override reverse FK column name in join table (Set only)
+- `fk_name` — override foreign key constraint name
+- `table` — override join table name (many-to-many only)
+- `nullable` — allow NULL in FK (Single only)
+- `cascade_delete` — delete related rows on parent delete
+- `owner` — ownership direction for one-to-one (Single only)
+
+**Example:**
+```python
+class Order(Entity):
+    id = PK[int]
+    customer = Single[Customer](fk_name="fk_order__customer", cascade_delete=True)
+    items = Set[OrderItem](cascade_delete=True)
+    created = Req[datetime](precision=6)
+    notes = Opt[str](256)
+    is_draft = Local[bool](default=True)
+```
+
+### Session and db_session
+
+`db_session` is used for **both sync and async** contexts:
+- Sync: `with db_session: ...`
+- Async: `async with db_session: ...` (inside `async def`)
+
 ---
 
 ## Coding Conventions
@@ -164,3 +210,12 @@ Any failure in any gate means the work is not complete.
 - **`db.close()` vs `await db.close()`** — `Database.close()` is sync;
   `AsyncDatabase.close()` is also sync (it schedules teardown).  There is no
   `await db.aclose()`.
+- **Python 3.14 bytecode** — `generators.py` handles `LOAD_SMALL_INT` (optimized
+  integer constants) and `POP_ITER` (loop cleanup).  On older Python versions,
+  `LOAD_CONST` is used instead.  No action needed; bytecode decompiler is
+  version-agnostic.
+- **API v0.2 syntax** — Never use old `FieldSpec()`/`RelationSpec()` class-body
+  syntax in new code.  Use marker-call syntax: `Req(...)`, `Opt(...)`, `Single(...)`,
+  `Set(...)`, `Local(...)`.
+- **v0.2 `db_session` for both** — `db_session` works for sync and async;
+  there is no `async_db_session`.  Use the same context manager for both.
