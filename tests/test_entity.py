@@ -623,6 +623,167 @@ class TestDeleteMethod:
             e.delete()
 
 
+class TestFlushMethod:
+    """Entity.flush() — persists only this instance immediately."""
+
+    def test_flush_new_entity_assigns_pk(self) -> None:
+        from nextorm.database import Database  # noqa: PLC0415
+
+        db = Database(entities=[_SimpleEntity])
+        db.bind("sqlite", ":memory:")
+        db.generate_mapping(create_tables=True)
+        with db_session:
+            e = _SimpleEntity(name="flushed", score=1)
+            assert e.id is None
+            e.flush()
+            assert e.id is not None  # PK assigned after flush
+        db.close()
+
+    def test_flush_does_not_flush_other_entities(self) -> None:
+        """Only the target entity is written; others remain pending."""
+        from nextorm.database import Database  # noqa: PLC0415
+
+        db = Database(entities=[_SimpleEntity])
+        db.bind("sqlite", ":memory:")
+        db.generate_mapping(create_tables=True)
+        with db_session:
+            a = _SimpleEntity(name="a", score=1)
+            b = _SimpleEntity(name="b", score=2)
+            a.flush()
+            # a is saved, b is still pending
+            assert a.id is not None
+            assert b.id is None
+        # b got saved on session exit
+        assert b.id is not None
+        db.close()
+
+    def test_flush_dirty_entity_updates_row(self) -> None:
+        from nextorm.database import Database  # noqa: PLC0415
+
+        db = Database(entities=[_SimpleEntity])
+        db.bind("sqlite", ":memory:")
+        db.generate_mapping(create_tables=True)
+        with db_session:
+            e = _SimpleEntity(name="original", score=0)
+        pk = e.id
+        with db_session:
+            e2 = db.select(_SimpleEntity).filter(_SimpleEntity.id == pk).fetch_one()
+            assert e2 is not None
+            e2.name = "updated"
+            e2.flush()
+            # Verify row is updated in DB within the same session
+            e3 = db.select(_SimpleEntity).filter(_SimpleEntity.id == pk).fetch_one()
+            assert e3 is not None
+            assert e3.name == "updated"
+        db.close()
+
+    def test_flush_without_db_context_uses_registry(self) -> None:
+        """flush() falls back to _find_db_for_entity when _db_ is not set."""
+        from nextorm.database import Database  # noqa: PLC0415
+
+        class _FlushFallback(Entity):
+            name: Req[str]
+
+        db = Database(entities=[_FlushFallback])
+        db.bind("sqlite", ":memory:")
+        db.generate_mapping(create_tables=True)
+        with db_session:
+            e = _FlushFallback(name="fallback")
+            # Remove the _db_ context to force fallback path
+            vars(e).pop("_db_", None)
+            e.flush()
+            assert e.id is not None
+        db.close()
+
+    def test_flush_without_mapped_db_raises(self) -> None:
+        """flush() raises RuntimeError when no database is registered for the entity."""
+
+        class _Unmapped(Entity):
+            name: Req[str]
+
+        e = _Unmapped.__new__(_Unmapped)
+        with pytest.raises(RuntimeError):
+            e.flush()
+
+
+class TestCommitMethod:
+    """Entity.commit() — persists this instance and commits the transaction."""
+
+    def test_commit_new_entity_assigns_pk(self) -> None:
+        from nextorm.database import Database  # noqa: PLC0415
+
+        db = Database(entities=[_SimpleEntity])
+        db.bind("sqlite", ":memory:")
+        db.generate_mapping(create_tables=True)
+        with db_session:
+            e = _SimpleEntity(name="committed", score=7)
+            e.commit()
+            assert e.id is not None
+        db.close()
+
+    def test_commit_does_not_flush_other_entities(self) -> None:
+        """commit() saves only this entity before committing."""
+        from nextorm.database import Database  # noqa: PLC0415
+
+        db = Database(entities=[_SimpleEntity])
+        db.bind("sqlite", ":memory:")
+        db.generate_mapping(create_tables=True)
+        with db_session:
+            a = _SimpleEntity(name="a", score=1)
+            b = _SimpleEntity(name="b", score=2)
+            a.commit()
+            assert a.id is not None
+            assert b.id is None
+        assert b.id is not None
+        db.close()
+
+    def test_commit_dirty_entity_persists_update(self) -> None:
+        from nextorm.database import Database  # noqa: PLC0415
+
+        db = Database(entities=[_SimpleEntity])
+        db.bind("sqlite", ":memory:")
+        db.generate_mapping(create_tables=True)
+        with db_session:
+            e = _SimpleEntity(name="orig", score=0)
+        pk = e.id
+        with db_session:
+            e2 = db.select(_SimpleEntity).filter(_SimpleEntity.id == pk).fetch_one()
+            assert e2 is not None
+            e2.name = "changed"
+            e2.commit()
+            e3 = db.select(_SimpleEntity).filter(_SimpleEntity.id == pk).fetch_one()
+            assert e3 is not None
+            assert e3.name == "changed"
+        db.close()
+
+    def test_commit_without_db_context_uses_registry(self) -> None:
+        """commit() falls back to _find_db_for_entity when _db_ is not set."""
+        from nextorm.database import Database  # noqa: PLC0415
+
+        class _CommitFallback(Entity):
+            name: Req[str]
+
+        db = Database(entities=[_CommitFallback])
+        db.bind("sqlite", ":memory:")
+        db.generate_mapping(create_tables=True)
+        with db_session:
+            e = _CommitFallback(name="fallback")
+            vars(e).pop("_db_", None)
+            e.commit()
+            assert e.id is not None
+        db.close()
+
+    def test_commit_without_mapped_db_raises(self) -> None:
+        """commit() raises RuntimeError when no database is registered for the entity."""
+
+        class _UnmappedCommit(Entity):
+            name: Req[str]
+
+        e = _UnmappedCommit.__new__(_UnmappedCommit)
+        with pytest.raises(RuntimeError):
+            e.commit()
+
+
 class TestToDict:
     def test_all_fields_included_by_default(self) -> None:
         from nextorm.database import Database  # noqa: PLC0415
@@ -1474,7 +1635,7 @@ class TestEntityMetaV2:
         """Using bare Req (not subscripted) as annotation should raise TypeError."""
         with pytest.raises(TypeError):
 
-            class BadEntity(Entity): # pyright: ignore[reportUnusedClass]
+            class BadEntity(Entity):  # pyright: ignore[reportUnusedClass]
                 name: Req  # type: ignore[type-arg]
 
     # --- Union types in annotations (lines 780–781) ---
@@ -1534,7 +1695,7 @@ class TestEntityMetaV2:
     def test_pk_entity_creates_single_relation_not_field(self) -> None:
         """PK[SomeEntity] should create a Single relation, not a field (lines 829–848)."""
 
-        class Parent(Entity): # pyright: ignore[reportUnusedClass]
+        class Parent(Entity):  # pyright: ignore[reportUnusedClass]
             id: PK[int]
 
         class Child(Entity):

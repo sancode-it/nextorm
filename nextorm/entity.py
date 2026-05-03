@@ -1432,6 +1432,57 @@ class Entity(metaclass=EntityMeta):
             )
         db.delete_instance(self)
 
+    def flush(self) -> None:
+        """Persist this entity's pending changes to the database immediately.
+
+        Saves this specific entity — an INSERT when the entity is new (PK not
+        yet assigned), or an UPDATE for dirty fields.  Only this instance is
+        written; other entities in the session are unaffected.
+
+        The database is resolved in this order:
+
+        1. The ``_db_`` context attribute set by a previous ``db.save()`` or
+           ``db.select(...)`` call.
+        2. The mapped :class:`~nextorm.database.Database` located via
+           :func:`_find_db_for_entity`.
+
+        Raises :exc:`RuntimeError` when no mapped database can be found.
+
+        .. code-block:: python
+
+            with db_session:
+                order = Order(ref="ORD-001")
+                order.flush()  # writes only this order — no full session flush
+                print(order.id)  # PK available immediately after flush
+        """
+        db = vars(self).get("_db_")
+        if db is None:
+            db = _find_db_for_entity(type(self))
+        db.save(self)
+
+    def commit(self) -> None:
+        """Persist this entity's changes and commit the underlying transaction.
+
+        Equivalent to calling :meth:`flush` followed by
+        :meth:`~nextorm.database.Database.commit` on the attached database.
+        Commits the entire transaction of the attached connection, which is the
+        same scope ``db.commit()`` would commit — only this entity's changes are
+        guaranteed to have been flushed beforehand.
+
+        The database is resolved the same way as :meth:`flush`.
+
+        .. code-block:: python
+
+            with db_session:
+                order = Order(ref="ORD-001")
+                order.commit()  # flush + commit — order is durable immediately
+        """
+        db = vars(self).get("_db_")
+        if db is None:
+            db = _find_db_for_entity(type(self))
+        db.save(self)
+        db._commit_transaction()
+
     @classmethod
     def get(cls, **kwargs: Any) -> Self | None:
         """Return the first entity matching all given field values, or ``None``.

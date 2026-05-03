@@ -466,7 +466,8 @@ explicit save call required:
        user = User(name="alice", age=30)
    # ← INSERT fires here; user.id is now assigned by the DB
 
-If you need the auto-generated PK *before* the session ends, flush manually:
+If you need the auto-generated PK *before* the session ends you can flush
+at any granularity:
 
 .. code-block:: python
 
@@ -474,8 +475,28 @@ If you need the auto-generated PK *before* the session ends, flush manually:
 
    with db_session:
        user = User(name="alice", age=30)
-       flush()                 # INSERT fires immediately
+       flush()                 # flush *all* pending objects in the session
        print(user.id)          # available here
+
+For a single entity use :meth:`~nextorm.entity.Entity.flush` — it saves only
+that one instance without touching the rest of the session:
+
+.. code-block:: python
+
+   with db_session:
+       order = Order(ref="ORD-001")
+       other = Order(ref="ORD-002")   # not yet flushed
+       order.flush()                  # only this order is written
+       print(order.id)                # PK assigned immediately
+
+To also commit the transaction (making the change durable) use
+:meth:`~nextorm.entity.Entity.commit`:
+
+.. code-block:: python
+
+   with db_session:
+       order = Order(ref="ORD-001")
+       order.commit()          # flush this entity + commit the transaction
 
 :meth:`~nextorm.database.Database.save` is available for fine-grained, explicit
 control (e.g. outside a session or when you need the PK back immediately without
