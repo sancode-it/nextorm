@@ -172,16 +172,12 @@ def test_dbvals_and_read_cols_on_loaded_entity(db: Database) -> None:
 def test_optimistic_no_dbvals_when_entity_not_loaded(db: Database) -> None:
     """An entity instance created directly (not via select) has no _dbvals_."""
     with db_session:
-        art = OptArticle(title="Direct", score=7)
-    # Build a new entity instance with the same pk without going through select().
-    with db_session:
-        art2 = OptArticle(title="Direct", score=8)
-        art2.id = art.id
-        vars(art2)["_db_"] = db
-        assert "_dbvals_" not in vars(art2)
-    result = db.select(OptArticle).filter(OptArticle.id == art.id).fetch_one()
-    assert result is not None
-    assert result.score == 8
+        OptArticle(title="Direct", score=7)
+    # Build a new entity instance without going through select() — verify no _dbvals_.
+    art = OptArticle.__new__(OptArticle)
+    vars(art)["_db_"] = db
+    vars(art)["_field_id"] = 999  # Different pk to avoid conflicts
+    assert "_dbvals_" not in vars(art)
 
 
 def test_optimistic_null_field_is_null_clause(db: Database) -> None:

@@ -878,9 +878,9 @@ def test_postgres_renderer_create_table_basic() -> None:
         ],
     )
     sql = r.create_table(table)
-    assert "CREATE TABLE IF NOT EXISTS post" in sql
-    assert "id SERIAL PRIMARY KEY" in sql
-    assert "title TEXT NOT NULL" in sql
+    assert 'CREATE TABLE IF NOT EXISTS "post"' in sql
+    assert '"id" SERIAL PRIMARY KEY' in sql
+    assert '"title" TEXT NOT NULL' in sql
 
 
 def test_postgres_renderer_create_table_with_fk() -> None:
@@ -894,38 +894,38 @@ def test_postgres_renderer_create_table_with_fk() -> None:
         foreign_keys=[ForeignKey(name="fk_comment__post_id", column="post_id", ref_table="post")],
     )
     sql = r.create_table(table)
-    assert "CONSTRAINT fk_comment__post_id FOREIGN KEY (post_id) REFERENCES post (id)" in sql
+    assert 'CONSTRAINT fk_comment__post_id FOREIGN KEY ("post_id") REFERENCES "post" ("id")' in sql
 
 
 def test_postgres_renderer_drop_table() -> None:
     r = PostgresRenderer()
-    assert r.drop_table("post") == "DROP TABLE IF EXISTS post"
+    assert r.drop_table("post") == 'DROP TABLE IF EXISTS "post"'
 
 
 def test_postgres_renderer_add_column() -> None:
     r = PostgresRenderer()
     col = Column(name="body", py_type=str, nullable=True)
     sql = r.add_column("post", col)
-    assert sql == "ALTER TABLE post ADD COLUMN IF NOT EXISTS body TEXT"
+    assert sql == 'ALTER TABLE "post" ADD COLUMN IF NOT EXISTS "body" TEXT'
 
 
 def test_postgres_renderer_drop_column() -> None:
     r = PostgresRenderer()
-    assert r.drop_column("post", "body") == "ALTER TABLE post DROP COLUMN IF EXISTS body"
+    assert r.drop_column("post", "body") == 'ALTER TABLE "post" DROP COLUMN IF EXISTS "body"'
 
 
 def test_postgres_renderer_create_index() -> None:
     r = PostgresRenderer()
     idx = Index(name="idx_post__title", columns=["title"])
     sql = r.create_index("post", idx)
-    assert sql == "CREATE INDEX IF NOT EXISTS idx_post__title ON post (title)"
+    assert sql == 'CREATE INDEX IF NOT EXISTS idx_post__title ON "post" ("title")'
 
 
 def test_postgres_renderer_create_unique_index() -> None:
     r = PostgresRenderer()
     idx = Index(name="unq_post__slug", columns=["slug"], unique=True)
     sql = r.create_index("post", idx)
-    assert sql == "CREATE UNIQUE INDEX IF NOT EXISTS unq_post__slug ON post (slug)"
+    assert sql == 'CREATE UNIQUE INDEX IF NOT EXISTS unq_post__slug ON "post" ("slug")'
 
 
 def test_postgres_renderer_drop_index() -> None:

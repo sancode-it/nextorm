@@ -40,6 +40,7 @@ specific database, prefer ``db.select(Entity).filter(...)`` instead.
 
 from __future__ import annotations
 
+import dataclasses
 import dis
 import sys
 import types  # noqa: TC003
@@ -48,12 +49,23 @@ from typing import TYPE_CHECKING, Any, cast
 from nextorm.entity import Entity
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
 
     from nextorm.query import QuerySet
     from nextorm.sql.nodes import SqlNode
 
 __all__ = ["select", "count", "avg", "sum", "min", "max", "DecompileError"]
+
+
+@dataclasses.dataclass(frozen=True)
+class _JoinSpec:
+    """Describes a JOIN that must be added to the QuerySet for a relation traversal."""
+
+    from_table: str
+    table_name: str
+    on: Any  # BinOp at runtime
+    join_type: str = "INNER"
+
 
 # Mapping from Python compare-op bytecode names to SQL operators
 _COMPARE_OPS: dict[str, str] = {
@@ -107,32 +119,48 @@ class _StackItem:
         self.value = value
 
 
-def _decompile_condition(code: types.CodeType, free_vars: dict[str, Any]) -> SqlNode | None:
+def _decompile_condition(
+    code: types.CodeType,
+    free_vars: dict[str, Any],
+    entity_cls: type[Entity] | None = None,
+    func_globals: dict[str, Any] | None = None,
+) -> tuple[SqlNode | None, list[_JoinSpec]]:
     """Decompile the filter condition from a generator expression's code object.
 
     Parameters
     ----------
     code:
-        The code object of the generator expression.
+        The code object of the generator expression or lambda predicate.
     free_vars:
         Mapping of free variable names to their values (from the enclosing scope).
+    entity_cls:
+        The entity class being queried.  Required to resolve two-level attribute
+        chains such as ``lambda c: c.shop.slug == slug`` into a JOIN + column
+        reference.  When ``None``, chained attribute access raises
+        :exc:`DecompileError`.
 
     Returns
     -------
-    SqlNode or None
-        The SQL filter node, or ``None`` if the generator has no ``if`` clause.
+    tuple[SqlNode or None, list[_JoinSpec]]
+        The SQL filter node (or ``None`` when the predicate has no condition)
+        and a list of JOIN specifications that must be applied to the QuerySet
+        before the filter condition.
 
     Raises
     ------
     DecompileError
         If the bytecode pattern is not supported.
     """
-    from nextorm.sql.nodes import BinOp, ColumnRef, Param, UnaryOp  # noqa: PLC0415
+    from nextorm.sql.nodes import BinOp, ColumnRef, FuncCall, Literal, Param, UnaryOp  # noqa: PLC0415
 
     instructions = list(dis.get_instructions(code))
     stack: list[_StackItem] = []
     and_nodes: list[SqlNode] = []  # nodes in the current AND group
     or_groups: list[SqlNode] = []  # completed OR alternatives (each already AND-combined)
+    joins: list[_JoinSpec] = []  # JOINs required by relation traversals
+    # Track whether the code yields a value (generator expression) vs returns one (lambda predicate).
+    # Bare "attr" items left on the stack are filter conditions only in predicate (non-yield) code.
+    has_yield = any(instr.opname == "YIELD_VALUE" for instr in instructions)
 
     def _finalize_and_group() -> None:
         """Combine and_nodes with AND, push result to or_groups, reset and_nodes."""
@@ -154,11 +182,167 @@ def _decompile_condition(code: types.CodeType, free_vars: dict[str, Any]) -> Sql
         if item.kind == "node":
             return cast("SqlNode", item.value)
         if item.kind == "attr":
-            # Attribute access on the iter var → ColumnRef
-            return ColumnRef(item.value)
+            # Attribute access on the iter var → ColumnRef (use the proper SQL column name)
+            attr_name = cast("str", item.value)
+            if entity_cls is not None:
+                _fields = getattr(entity_cls, "_fields_", {})
+                _relations = getattr(entity_cls, "_relations_", {})
+                if attr_name in _fields:
+                    return ColumnRef(_fields[attr_name].spec.column or attr_name)
+                if attr_name in _relations:
+                    _ri = _relations[attr_name]
+                    return ColumnRef(_ri.spec.column or f"{attr_name}_id")
+            return ColumnRef(attr_name)
+        if item.kind == "rel_chain":
+            # N-level attribute access: p.rel1.rel2....field
+            # item.value is a list of attribute names; the last one is the field,
+            # all preceding ones are relation traversal steps.
+            chain = cast("list[str]", item.value)
+            if entity_cls is None:
+                raise DecompileError(
+                    f"Cannot resolve '{'.'.join(chain)}': entity class is required "
+                    "for multi-level attribute access. Pass entity_cls to _decompile_condition."
+                )
+            from nextorm.entity import _matches_entity, _resolve_entity_target  # noqa: PLC0415
+
+            current_entity: Any = entity_cls
+            current_table: str = entity_cls._table_name_
+            # Walk all but the last name, building JOINs for each relation step.
+            for rel_name in chain[:-1]:
+                ri = current_entity._relations_.get(rel_name)
+                if ri is None:
+                    raise DecompileError(
+                        f"'{rel_name}' is not a known relation on {current_entity.__name__!r}."
+                    )
+                target_cls = _resolve_entity_target(ri.spec.target)
+                if target_cls is None:
+                    raise DecompileError(
+                        f"Cannot resolve target entity for relation '{rel_name}' "
+                        f"on {current_entity.__name__!r}."
+                    )
+                target_table = target_cls._table_name_
+                pk_fields = target_cls._pk_fields_
+                if not pk_fields:  # pragma: no cover
+                    raise DecompileError(f"Target entity {target_cls.__name__!r} has no primary key.")
+                is_composite_target = len(pk_fields) > 1
+
+                # Detect non-owning Single (FK is on target, not current).
+                # This happens with reverse O2O relations where the other side has
+                # primary_key=True (e.g., Config.shop: PK[Shop]).
+                from nextorm.fields import RelationKind  # noqa: PLC0415
+
+                is_non_owning = ri.spec.owner is False
+                if not is_non_owning and ri.spec.owner is None:
+                    # Auto-detect: target has a Single/PK relation back with primary_key=True
+                    for rev_ri in target_cls._relations_.values():
+                        if (
+                            rev_ri.spec.kind == RelationKind.SINGLE
+                            and _matches_entity(rev_ri.spec.target, current_entity)
+                            and rev_ri.spec.primary_key
+                        ):
+                            is_non_owning = True
+                            break
+
+                if is_non_owning:
+                    # FK is on target table.  Find the reverse relation column.
+                    rev_fk_col: str | None = None
+                    for rev_ri in target_cls._relations_.values():
+                        if rev_ri.spec.kind == RelationKind.SINGLE and _matches_entity(
+                            rev_ri.spec.target, current_entity
+                        ):
+                            rev_fk_col = rev_ri.spec.column or f"{rev_ri.name}_id"
+                            break
+                    if rev_fk_col is None:
+                        rev_fk_col = f"{current_entity.__name__.lower()}_id"
+                    # Also get the PK of current_entity for the join condition
+                    cur_pk_fields = current_entity._pk_fields_
+                    cur_pk_attr = cur_pk_fields[0] if cur_pk_fields else "id"
+                    if cur_pk_attr in current_entity._fields_:
+                        cur_pk_col = current_entity._fields_[cur_pk_attr].spec.column or cur_pk_attr
+                    else:
+                        cur_pk_col = f"{cur_pk_attr}_id"
+                    join_cond = BinOp(
+                        ColumnRef(rev_fk_col, target_table),
+                        "=",
+                        ColumnRef(cur_pk_col, current_table),
+                    )
+                elif is_composite_target:
+                    # Composite PK target — build multi-column JOIN condition.
+                    from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+
+                    if ri.spec.columns:
+                        fk_col_names = list(ri.spec.columns)
+                    else:
+                        fk_col_names = _derive_composite_fk_cols(rel_name, target_cls)
+                    # Derive the target PK column names
+                    target_pk_cols: list[str] = []
+                    for pk_f in pk_fields:
+                        if pk_f in target_cls._fields_:
+                            target_pk_cols.append(target_cls._fields_[pk_f].spec.column or pk_f)
+                        else:
+                            trel = target_cls._relations_.get(pk_f)
+                            target_pk_cols.append(
+                                (trel.spec.column if trel else None) or f"{pk_f}_id"
+                            )
+                    # Build AND of individual column equalities
+                    join_cond = BinOp(
+                        ColumnRef(fk_col_names[0], current_table),
+                        "=",
+                        ColumnRef(target_pk_cols[0], target_table),
+                    )
+                    for fk_c, pk_c in zip(fk_col_names[1:], target_pk_cols[1:], strict=False):
+                        join_cond = BinOp(
+                            join_cond,
+                            "AND",
+                            BinOp(
+                                ColumnRef(fk_c, current_table),
+                                "=",
+                                ColumnRef(pk_c, target_table),
+                            ),
+                        )
+                else:
+                    fk_col = ri.spec.column or f"{rel_name}_id"
+                    pk_attr = pk_fields[0]  # pyright: ignore[reportGeneralTypeIssues]
+                    if pk_attr in target_cls._fields_:
+                        pk_col = target_cls._fields_[pk_attr].spec.column or pk_attr
+                    else:
+                        rel_pk = target_cls._relations_.get(pk_attr)
+                        pk_col = (rel_pk.spec.column if rel_pk else None) or f"{pk_attr}_id"
+                    join_cond = BinOp(
+                        ColumnRef(fk_col, current_table),
+                        "=",
+                        ColumnRef(pk_col, target_table),
+                    )
+                # Dedup: only add the join once per (source_table, target_table) pair.
+                join_key = (current_table, target_table)
+                if not any((j.from_table, j.table_name) == join_key for j in joins):
+                    joins.append(
+                        _JoinSpec(
+                            from_table=current_table,
+                            table_name=target_table,
+                            on=join_cond,
+                        )
+                    )
+                current_entity = target_cls
+                current_table = target_table
+            # The last name is the field to reference on the terminal entity.
+            field_name = chain[-1]
+            if field_name in current_entity._fields_:
+                col = current_entity._fields_[field_name].spec.column or field_name
+            elif field_name in current_entity._relations_:
+                ri2 = current_entity._relations_[field_name]
+                col = ri2.spec.column or f"{field_name}_id"
+            else:
+                col = field_name
+            return ColumnRef(col, current_table)
         if item.kind == "name":
-            # Resolved constant/variable
-            return Param(value=item.value)
+            # Resolved constant/variable — extract PK if value is an Entity instance
+            val = item.value
+            if isinstance(val, Entity):
+                from nextorm.database import _get_pk_val  # noqa: PLC0415
+
+                val = _get_pk_val(val)
+            return Param(value=val)
         raise DecompileError(f"Cannot convert stack item {item!r} to SqlNode.")  # pragma: no cover
 
     i = 0
@@ -218,7 +402,12 @@ def _decompile_condition(code: types.CodeType, free_vars: dict[str, Any]) -> Sql
         if op in ("LOAD_DEREF", "LOAD_GLOBAL", "LOAD_NAME"):
             # Variable from enclosing scope — resolve its value
             name = instr.argval
-            val = free_vars.get(name)
+            if name in free_vars:
+                val: Any = free_vars[name]
+            elif func_globals is not None and name in func_globals:
+                val = func_globals[name]
+            else:
+                val = None
             stack.append(_StackItem("name", val))
             i += 1
             continue
@@ -235,14 +424,22 @@ def _decompile_condition(code: types.CodeType, free_vars: dict[str, Any]) -> Sql
                 stack.pop()
                 stack.append(_StackItem("attr", instr.argval))
             elif stack and stack[-1].kind == "attr":
-                # Chained attribute: e.g. p.x.y — not supported
-                raise DecompileError(
-                    f"Multi-level attribute access not supported: {stack[-1].value}.{instr.argval}"
-                )
+                # Chained attribute: p.relation.field → rel_chain (start a chain)
+                prev_attr = stack.pop().value
+                stack.append(_StackItem("rel_chain", [prev_attr, instr.argval]))
+            elif stack and stack[-1].kind == "rel_chain":
+                # Extend an existing chain: p.a.b → p.a.b.c
+                chain = list(cast("list[str]", stack[-1].value))
+                chain.append(instr.argval)
+                stack[-1] = _StackItem("rel_chain", chain)
             else:
-                # Attribute on a bound value — skip for now
-                pop()
-                stack.append(_StackItem("attr", instr.argval))
+                # Attribute on a bound value — resolve the attribute at decompile time
+                prev = pop()
+                if prev.kind == "name" and prev.value is not None:
+                    resolved = getattr(prev.value, instr.argval, None)
+                    stack.append(_StackItem("name", resolved))
+                else:
+                    stack.append(_StackItem("attr", instr.argval))
             i += 1
             continue
 
@@ -357,6 +554,139 @@ def _decompile_condition(code: types.CodeType, free_vars: dict[str, Any]) -> Sql
             right = pop()
             left = pop()
             sql_op = "NOT IN" if instr.argval else "IN"
+
+            # Special case: `val in col.lower()` → SQL `LOWER(col) LIKE '%val%'`
+            if right.kind == "func_call" and sql_op == "IN":
+                func_name, col_item = right.value
+                col_node = to_node(col_item)
+                val = left.value if left.kind == "name" else None
+                if val is not None and isinstance(val, str):
+                    val_lower = val.lower() if func_name == "LOWER" else val
+                    like_node = BinOp(
+                        FuncCall(func_name, col_node), "LIKE", Param(value=f"%{val_lower}%")
+                    )
+                    stack.append(_StackItem("node", like_node))
+                    i += 1
+                    continue
+
+            # M1: `entity in set_relation` → EXISTS (SELECT 1 FROM join_table ...)
+            # e.g. `tag in s.tag_list` where tag_list is a M2M Set[ShopTag]
+            if sql_op == "IN" and right.kind == "attr" and entity_cls is not None:
+                attr_name = right.value
+                rel = getattr(entity_cls, "_relations_", {}).get(attr_name)
+                if rel is not None:
+                    from nextorm.entity import (  # noqa: PLC0415
+                        _matches_entity,
+                        _resolve_entity_target,
+                    )
+                    from nextorm.fields import RelationKind  # noqa: PLC0415
+
+                    if rel.spec.kind == RelationKind.SET:
+                        target_cls = _resolve_entity_target(rel.spec.target)
+                        owner_table = entity_cls._table_name_
+                        if target_cls is not None:
+                            target_table = target_cls._table_name_
+
+                            # Determine if M2M (target also has Set back at owner)
+                            is_m2m = any(
+                                r.spec.kind == RelationKind.SET
+                                and _matches_entity(r.spec.target, entity_cls)
+                                for r in target_cls._relations_.values()
+                            )
+
+                            if is_m2m:
+                                join_table = rel.spec.table or "_".join(
+                                    sorted([owner_table, target_table])
+                                )
+                                owner_pk_fields = entity_cls._pk_fields_
+                                owner_pk_col = (
+                                    entity_cls._fields_[owner_pk_fields[0]].spec.column
+                                    or owner_pk_fields[0]
+                                    if owner_pk_fields and owner_pk_fields[0] in entity_cls._fields_
+                                    else "id"
+                                )
+                                jt_owner_col = f"{owner_table}_id"
+                                jt_target_col = f"{target_table}_id"
+                                # Get the target entity's PK value from left
+                                val = left.value
+                                if isinstance(val, Entity):
+                                    from nextorm.database import _get_pk_val  # noqa: PLC0415
+
+                                    val = _get_pk_val(val)
+                                exists_sql = (
+                                    f"SELECT 1 FROM {join_table} WHERE "
+                                    f"{join_table}.{jt_owner_col} = {owner_table}.{owner_pk_col} AND "
+                                    f"{join_table}.{jt_target_col} = ?"
+                                )
+                                from nextorm.sql.nodes import ExistsNode  # noqa: PLC0415
+
+                                exists_node = ExistsNode(sql=exists_sql, params=(val,))
+                                stack.append(_StackItem("node", exists_node))
+                                i += 1
+                                continue
+
+            # M2: `val in set_relation.field` → EXISTS (SELECT 1 FROM target ...)
+            # e.g. `True in p.variations.active` where variations is Set[ProductVariation]
+            if sql_op == "IN" and right.kind == "rel_chain" and entity_cls is not None:
+                chain = list(right.value)
+                rel_name = chain[-2]
+                field_name = chain[-1]
+                rel = getattr(entity_cls, "_relations_", {}).get(rel_name)
+                if rel is not None:
+                    from nextorm.entity import _resolve_entity_target  # noqa: PLC0415
+                    from nextorm.fields import RelationKind  # noqa: PLC0415
+
+                    if rel.spec.kind == RelationKind.SET:
+                        target_cls = _resolve_entity_target(rel.spec.target)
+                        owner_table = entity_cls._table_name_
+                        if target_cls is not None:
+                            target_table = target_cls._table_name_
+                            owner_pk_fields = entity_cls._pk_fields_
+                            owner_pk_col = (
+                                entity_cls._fields_[owner_pk_fields[0]].spec.column
+                                or owner_pk_fields[0]
+                                if owner_pk_fields and owner_pk_fields[0] in entity_cls._fields_
+                                else "id"
+                            )
+                            # Find back-ref FK col on target
+                            from nextorm.entity import _matches_entity  # noqa: PLC0415
+
+                            back_ref = next(
+                                (
+                                    r
+                                    for r in target_cls._relations_.values()
+                                    if r.spec.kind == RelationKind.SINGLE
+                                    and _matches_entity(r.spec.target, entity_cls)
+                                ),
+                                None,
+                            )
+                            fk_col = (
+                                (back_ref.spec.column or f"{back_ref.name}_id")
+                                if back_ref
+                                else f"{rel_name}_id"
+                            )
+                            # Get field column
+                            target_fi = target_cls._fields_.get(field_name)
+                            field_col = (
+                                (target_fi.spec.column or field_name) if target_fi else field_name
+                            )
+                            val = left.value if left.kind == "name" else None
+                            from nextorm.fields import _serialize_value  # noqa: PLC0415
+
+                            if val is not None:
+                                val = _serialize_value(val)
+                            exists_sql = (
+                                f"SELECT 1 FROM {target_table} WHERE "
+                                f"{target_table}.{fk_col} = {owner_table}.{owner_pk_col} AND "
+                                f"{target_table}.{field_col} = ?"
+                            )
+                            from nextorm.sql.nodes import ExistsNode  # noqa: PLC0415
+
+                            exists_node = ExistsNode(sql=exists_sql, params=(val,))
+                            stack.append(_StackItem("node", exists_node))
+                            i += 1
+                            continue
+
             node = BinOp(to_node(left), sql_op, to_node(right))
             stack.append(_StackItem("node", node))
             i += 1
@@ -364,7 +694,81 @@ def _decompile_condition(code: types.CodeType, free_vars: dict[str, Any]) -> Sql
 
         # Any remaining instructions on the right-hand-side path are ignored;
         # raise if they look significant
-        if op.startswith(("CALL", "BUILD_", "MAKE_")):
+        if op.startswith("CALL"):
+            # Attempt to evaluate a free-variable function call at decompile time.
+            # Works for calls like datetime.now(), uuid4(), len(x), etc.
+            # The CALL N instruction expects: [..., func, arg0, ..., argN-1]
+            # (PUSH_NULL before the function is ignored and not on our stack).
+            n_args = instr.argval if isinstance(instr.argval, int) else 0
+            # Pop arguments (top of stack = last arg)
+            args: list[_StackItem] = []
+            for _ in range(n_args):
+                a = pop()
+                if a.kind not in ("name", "attr", "rel_chain"):
+                    raise DecompileError(
+                        f"Unsupported bytecode instruction {op!r} in select() filter: "
+                        f"non-constant argument of kind {a.kind!r}. "
+                        "Use db.select(Entity).filter(...) for complex conditions."
+                    )
+                args.insert(0, a)
+            # Pop the function
+            func_item = pop()
+
+            # Case 1: column method call — e.g. `u.email.lower()` → FuncCall("LOWER", col)
+            _COL_METHODS = {"lower": "LOWER", "upper": "UPPER", "strip": "TRIM"}
+            if n_args == 0 and func_item.kind == "rel_chain":
+                chain = list(func_item.value)
+                method_name = chain[-1]
+                if method_name in _COL_METHODS:
+                    col_chain = chain[:-1]
+                    sql_func = _COL_METHODS[method_name]
+                    col_item = _StackItem(
+                        "rel_chain" if len(col_chain) > 1 else "attr",
+                        col_chain if len(col_chain) > 1 else col_chain[0],
+                    )
+                    stack.append(_StackItem("func_call", (sql_func, col_item)))
+                    i += 1
+                    continue
+                raise DecompileError(
+                    f"Unsupported column method '{method_name}' in select() filter. "
+                    "Use db.select(Entity).filter(...) for complex conditions."
+                )
+            if n_args == 0 and func_item.kind == "attr":
+                method_name = func_item.value
+                if method_name in _COL_METHODS:
+                    raise DecompileError(
+                        f"Column method {method_name!r} requires attribute"
+                        " context (e.g. u.field.lower())."
+                    )
+
+            # Case 2: free-variable function call — evaluate at compile time
+            if func_item.kind != "name" or not callable(func_item.value):
+                raise DecompileError(
+                    f"Unsupported bytecode instruction {op!r} in select() filter. "
+                    "Use db.select(Entity).filter(...) for complex conditions."
+                )
+            # All args must be resolved "name" items
+            evaluated_args = []
+            for a in args:  # pyright: ignore[reportUnknownVariableType]
+                if a.kind == "name":
+                    evaluated_args.append(a.value)  # pyright: ignore[reportUnknownMemberType]
+                else:
+                    raise DecompileError(
+                        f"Unsupported bytecode instruction {op!r} in select() filter: "
+                        f"non-constant argument. "
+                        "Use db.select(Entity).filter(...) for complex conditions."
+                    )
+            try:
+                call_result = func_item.value(*evaluated_args)
+            except Exception as exc:
+                raise DecompileError(
+                    f"Error evaluating free-variable call at decompile time: {exc}"
+                ) from exc
+            stack.append(_StackItem("name", call_result))
+            i += 1
+            continue
+
+        if op.startswith(("BUILD_", "MAKE_")):
             raise DecompileError(
                 f"Unsupported bytecode instruction {op!r} in select() filter. "
                 "Use db.select(Entity).filter(...) for complex conditions."
@@ -372,14 +776,27 @@ def _decompile_condition(code: types.CodeType, free_vars: dict[str, Any]) -> Sql
 
         i += 1
 
+    # Collect any node items remaining on the stack.  In generator expressions,
+    # comparison nodes are moved to and_nodes by POP_JUMP_IF_FALSE.  In a
+    # plain lambda (no jump instructions), the final comparison node stays on
+    # the stack and must be drained here before finalising.
+    for item in stack:
+        if item.kind == "node":
+            and_nodes.append(item.value)
+        elif item.kind == "attr" and not has_yield:
+            # Bare attribute used as a boolean condition in a predicate (non-generator)
+            # e.g. ``lambda pv: pv.product == x and pv.is_default``.
+            # In generator expressions the trailing attr is the yielded value — not a filter.
+            and_nodes.append(BinOp(to_node(item), "=", Literal(value=True)))
+
     # Finalise any remaining AND group, then combine all OR alternatives
     _finalize_and_group()
     if not or_groups:
-        return None
+        return None, joins
     result: SqlNode = or_groups[0]
     for extra in or_groups[1:]:
         result = BinOp(result, "OR", extra)
-    return result
+    return result, joins
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +804,7 @@ def _decompile_condition(code: types.CodeType, free_vars: dict[str, Any]) -> Sql
 # ---------------------------------------------------------------------------
 
 
-def select[T: Entity](gen: Generator[T, None, None]) -> QuerySet[T]:
+def select[ET: Entity](gen: Generator[ET, None, None]) -> QuerySet[ET]:
     """Execute a generator-expression query and return a :class:`~nextorm.query.QuerySet`.
 
     The generator expression must iterate over a single entity class::
@@ -426,7 +843,7 @@ def select[T: Entity](gen: Generator[T, None, None]) -> QuerySet[T]:
         )
     entity_meta = iterator.entity_cls  # EntityMeta; __name__ resolves via type metaclass
     entity_name: str = entity_meta.__name__
-    entity_cls = cast("type[T]", entity_meta)  # for db.select() which takes type[T]
+    entity_cls = cast("type[ET]", entity_meta)  # for db.select() which takes type[ET]
 
     # Find a database that has this entity mapped
     from nextorm.database import Database  # noqa: PLC0415
@@ -459,9 +876,49 @@ def select[T: Entity](gen: Generator[T, None, None]) -> QuerySet[T]:
     # Collect free variables (enclosing scope) for constant resolution
     free_vars: dict[str, Any] = {**gi_frame.f_globals, **gi_frame.f_locals}
 
-    condition = _decompile_condition(code, free_vars)
+    condition, joins = _decompile_condition(code, free_vars, entity_cls=entity_cls)
 
     qs = db.select(entity_cls)
+    for j in joins:
+        qs = qs.join(j.table_name, j.on, join_type=j.join_type)
+    if condition is not None:
+        qs = qs.filter(condition)
+    return qs
+
+
+def _apply_predicate(  # pyright: ignore[reportUnusedFunction]
+    qs: Any,
+    predicate: Callable[[Any], Any],
+    entity_cls: type[Entity],
+) -> Any:
+    """Apply a callable predicate to *qs*, resolving relation JOINs automatically.
+
+    Used internally by :meth:`~nextorm.entity.Entity.get`,
+    :meth:`~nextorm.entity.Entity.exists`, and
+    :meth:`~nextorm.entity.Entity.aget`.  Decompiles the predicate's bytecode
+    and adds any required JOIN clauses before applying the filter condition.
+
+    Parameters
+    ----------
+    qs:
+        The base :class:`~nextorm.query.QuerySet` to augment.
+    predicate:
+        A callable (lambda or function) whose bytecode is decompiled into
+        SQL filter nodes.
+    entity_cls:
+        The entity class being queried — needed to resolve relation traversals.
+    """
+    code = predicate.__code__
+    free_vars: dict[str, Any] = {}
+    if code.co_freevars and predicate.__closure__:
+        for name, cell in zip(code.co_freevars, predicate.__closure__, strict=True):
+            free_vars[name] = cell.cell_contents
+    func_globals: dict[str, Any] | None = getattr(predicate, "__globals__", None)
+    condition, joins = _decompile_condition(
+        code, free_vars, entity_cls=entity_cls, func_globals=func_globals
+    )
+    for j in joins:
+        qs = qs.join(j.table_name, j.on, join_type=j.join_type)
     if condition is not None:
         qs = qs.filter(condition)
     return qs
@@ -507,7 +964,25 @@ def _decompile_yield_attr(code: types.CodeType) -> str | None:
     return None  # pragma: no cover
 
 
-def count[T: Entity](gen: Generator[T, None, None]) -> int:
+def _is_entity_generator(gen: Generator[Any, None, None]) -> bool:
+    """Return True when *gen* is iterating over an ``Entity`` class (via ``_EntityIterator``).
+
+    Used by the aggregation helpers (``sum``, ``avg``, ``min``, ``max``,
+    ``count``) to decide whether to run the generator through the ORM query
+    pipeline or fall back to the plain Python built-in.
+    """
+    from nextorm.entity import _EntityIterator  # noqa: PLC0415
+
+    if not isinstance(gen, types.GeneratorType):
+        return False
+    gi_frame = gen.gi_frame
+    if gi_frame is None:
+        return False
+    iterator = gi_frame.f_locals.get(".0")
+    return isinstance(iterator, _EntityIterator)
+
+
+def count(gen: Any) -> int:
     """Return the number of entities matching the generator-expression filter.
 
     Example::
@@ -517,7 +992,14 @@ def count[T: Entity](gen: Generator[T, None, None]) -> int:
     Equivalent to::
 
         db.select(Product).filter(Product.price > 100).count()
+
+    When *gen* does not iterate over an :class:`~nextorm.entity.Entity` class,
+    falls back to counting items in the plain Python generator.
     """
+    if not _is_entity_generator(gen):
+        import builtins  # noqa: PLC0415
+
+        return builtins.sum(1 for _ in gen)
     return select(gen).count()
 
 
@@ -538,6 +1020,12 @@ def avg(gen: Generator[Any, None, None]) -> Any:
         If the generator yields the entity rather than a field attribute.
     """
     assert isinstance(gen, types.GeneratorType)
+    if not _is_entity_generator(gen):
+        raise TypeError(
+            "avg() requires a generator iterating over an Entity class, "
+            "e.g. avg(p.price for p in Product). "
+            f"Got: {type(gen.gi_frame.f_locals.get('.0') if gen.gi_frame else None)!r}"
+        )
     field_name = _decompile_yield_attr(gen.gi_code)
     if field_name is None:
         raise DecompileError(
@@ -560,12 +1048,19 @@ def sum(gen: Generator[Any, None, None]) -> Any:  # noqa: A001
 
         db.select(Product).filter(Product.in_stock == True).sum("price")
 
+    Falls back to ``builtins.sum`` for plain Python generators that do not
+    iterate over an :class:`~nextorm.entity.Entity` class.
+
     Raises
     ------
     DecompileError
         If the generator yields the entity rather than a field attribute.
     """
     assert isinstance(gen, types.GeneratorType)
+    if not _is_entity_generator(gen):
+        import builtins  # noqa: PLC0415
+
+        return builtins.sum(gen)  # pyright: ignore
     field_name = _decompile_yield_attr(gen.gi_code)
     if field_name is None:
         raise DecompileError(
@@ -577,7 +1072,7 @@ def sum(gen: Generator[Any, None, None]) -> Any:  # noqa: A001
     return qs.sum(field_name)
 
 
-def min(gen: Generator[Any, None, None]) -> Any:  # noqa: A001
+def min(gen: Generator[Any, None, None]) -> Any:
     """Compute ``MIN`` of the attribute yielded by the generator expression.
 
     The generator must yield a field attribute, not the entity itself::
@@ -594,6 +1089,10 @@ def min(gen: Generator[Any, None, None]) -> Any:  # noqa: A001
         If the generator yields the entity rather than a field attribute.
     """
     assert isinstance(gen, types.GeneratorType)
+    if not _is_entity_generator(gen):
+        import builtins  # noqa: PLC0415
+
+        return builtins.min(gen)  # pyright: ignore
     field_name = _decompile_yield_attr(gen.gi_code)
     if field_name is None:
         raise DecompileError(
@@ -622,6 +1121,10 @@ def max(gen: Generator[Any, None, None]) -> Any:  # noqa: A001
         If the generator yields the entity rather than a field attribute.
     """
     assert isinstance(gen, types.GeneratorType)
+    if not _is_entity_generator(gen):
+        import builtins  # noqa: PLC0415
+
+        return builtins.max(gen)
     field_name = _decompile_yield_attr(gen.gi_code)
     if field_name is None:
         raise DecompileError(

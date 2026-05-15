@@ -703,3 +703,37 @@ def test_sync_connection_is_abstract() -> None:
 def test_async_connection_is_abstract() -> None:
     with pytest.raises(TypeError):
         AsyncConnection()  # type: ignore[abstract]
+
+
+# ---------------------------------------------------------------------------
+# filename → database alias (Pony ORM compatibility)
+# ---------------------------------------------------------------------------
+
+
+def test_sync_connect_filename_alias() -> None:
+    """SQLiteSyncProvider.connect(filename=...) should work like connect(database=...)."""
+    p = SQLiteSyncProvider()
+    conn = p.connect(filename=":memory:")
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        row = cur.fetchone()
+        assert row is not None
+        assert row[0] == 1
+    finally:
+        conn.close()
+
+
+def test_async_connect_filename_alias() -> None:
+    """SQLiteAsyncProvider.connect(filename=...) should work like connect(database=...)."""
+    from asyncio import run
+
+    from nextorm.providers.sqlite import SQLiteAsyncConnection, SQLiteAsyncProvider
+
+    async def _run() -> None:
+        p = SQLiteAsyncProvider()
+        conn = await p.connect(filename=":memory:")
+        assert isinstance(conn, SQLiteAsyncConnection)
+        await conn.close()
+
+    run(_run())

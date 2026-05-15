@@ -190,13 +190,26 @@ def test_o2m_load_returns_list(o2m_db: Database) -> None:
     assert len(result) == 1
 
 
-def test_o2m_select_returns_queryset(o2m_db: Database) -> None:
+def test_o2m_filter_no_args_returns_queryset(o2m_db: Database) -> None:
     from nextorm.query import QuerySet
 
     with db_session:
         post = ColPost(title="P9")
+    qs = post.comments.filter()
+    assert isinstance(qs, QuerySet)
+
+
+def test_o2m_select_returns_queryset(o2m_db: Database) -> None:
+    """select() with no args returns an unfiltered QuerySet for the whole collection."""
+    from nextorm.query import QuerySet
+
+    with db_session:
+        post = ColPost(title="P9b")
+    post.comments.add(ColComment(text="x"))
+    post.comments.add(ColComment(text="y"))
     qs = post.comments.select()
     assert isinstance(qs, QuerySet)
+    assert qs.count() == 2
 
 
 def test_o2m_filter_returns_queryset(o2m_db: Database) -> None:
@@ -732,3 +745,387 @@ def test_o2m_random_returns_n_rows(o2m_db: Database) -> None:
         post.comments.add(ColComment(text=f"r{i}"))
     results = post.comments.random(2).fetch_all()
     assert len(results) == 2
+
+
+def test_o2m_remove_multiple_items(o2m_db: Database) -> None:
+    """Test remove() with a list of items."""
+    with db_session:
+        post = ColPost(title="RemoveMulti")
+    comments = [ColComment(text=f"c{i}") for i in range(3)]
+    for c in comments:
+        post.comments.add(c)
+    assert post.comments.count() == 3
+
+    # Reload comments to have proper ids
+    loaded = post.comments.load()
+    # Remove 2 items using a list
+    post.comments.remove(loaded[:2])
+    assert post.comments.count() == 1
+
+
+def test_o2m_remove_multiple_items_individual_args(o2m_db: Database) -> None:
+    """Test remove() with individual item arguments."""
+    with db_session:
+        post = ColPost(title="RemoveMulti2")
+    comments = [ColComment(text=f"c{i}") for i in range(3)]
+    for c in comments:
+        post.comments.add(c)
+    assert post.comments.count() == 3
+
+    # Reload comments to have proper ids
+    loaded = post.comments.load()
+    # Remove using individual args
+    post.comments.remove(loaded[0], loaded[1])
+    assert post.comments.count() == 1
+
+
+def test_m2m_remove_multiple_items(m2m_db: Database) -> None:
+    """Test remove() with a list of items on M2M relation."""
+    with db_session:
+        art = ColArticle(title="ArtMulti")
+        tags = [ColTag(label=f"t{i}") for i in range(3)]
+    for t in tags:
+        art.tags.add(t)
+    assert art.tags.count() == 3
+
+    # Reload tags to have proper ids
+    loaded = art.tags.load()
+    # Remove 2 items using a list
+    art.tags.remove(loaded[:2])
+    assert art.tags.count() == 1
+
+
+def test_m2m_remove_multiple_items_individual_args(m2m_db: Database) -> None:
+    """Test remove() with individual item arguments on M2M relation."""
+    with db_session:
+        art = ColArticle(title="ArtMulti2")
+        tags = [ColTag(label=f"t{i}") for i in range(3)]
+    for t in tags:
+        art.tags.add(t)
+    assert art.tags.count() == 3
+
+    # Reload tags to have proper ids
+    loaded = art.tags.load()
+    # Remove using individual args
+    art.tags.remove(loaded[0], loaded[1])
+    assert art.tags.count() == 1
+
+
+# ---------------------------------------------------------------------------
+# RelatedCollection.drop_table() on a non-M2M relation raises RuntimeError
+# ---------------------------------------------------------------------------
+
+
+def test_o2m_collection_drop_table_raises(o2m_db: Database) -> None:
+    """drop_table() on a one-to-many collection raises RuntimeError (lines 509-517)."""
+    with db_session:
+        post = ColPost(title="DT Test")
+    collection = post.comments
+    with pytest.raises(RuntimeError, match="only valid for many-to-many"):
+        collection.drop_table(with_all_data=True)
+
+
+def test_m2m_collection_drop_table(m2m_db: Database) -> None:
+    """drop_table() on a M2M collection drops the join table (lines 515-517)."""
+    with db_session:
+        art = ColArticle(title="Drop M2M Test")
+        tag = ColTag(label="test-tag-drop")
+    art.tags.add(tag)
+    assert art.tags.count() == 1
+    art.tags.drop_table(with_all_data=True)
+
+
+# ---------------------------------------------------------------------------
+# RelatedCollection.where() and filter(**kwargs)
+# ---------------------------------------------------------------------------
+
+
+def test_collection_select_with_predicate(o2m_db: Database) -> None:
+    """select(lambda c: ...) pre-filters collection via lambda predicate."""
+    with db_session:
+        post = ColPost(title="Select Pred")
+    post.comments.add(ColComment(text="yes"))
+    post.comments.add(ColComment(text="no"))
+    results = post.comments.select(  # pyright: ignore[reportUnknownLambdaType,reportUnknownMemberType]
+        lambda c: c.text == "yes"  # pyright: ignore[reportUnknownLambdaType,reportUnknownMemberType]
+    ).fetch_all()
+    assert len(results) == 1
+    assert results[0].text == "yes"
+
+
+def test_collection_select_with_conditions(o2m_db: Database) -> None:
+    """select(SqlNode) pre-filters collection via positional condition."""
+    from nextorm.sql.nodes import BinOp, ColumnRef, Param
+
+    with db_session:
+        post = ColPost(title="Select Cond")
+    post.comments.add(ColComment(text="match"))
+    post.comments.add(ColComment(text="other"))
+    results = post.comments.select(
+        None, BinOp(ColumnRef("text"), "=", Param(value="match"))
+    ).fetch_all()
+    assert len(results) == 1
+    assert results[0].text == "match"
+
+
+def test_collection_select_with_kwargs(o2m_db: Database) -> None:
+    """select(field=value) pre-filters collection via keyword equality."""
+    with db_session:
+        post = ColPost(title="Select KW")
+    post.comments.add(ColComment(text="alpha"))
+    post.comments.add(ColComment(text="beta"))
+    results = post.comments.select(text="alpha").fetch_all()
+    assert len(results) == 1
+    assert results[0].text == "alpha"
+
+
+def test_collection_select_combined(o2m_db: Database) -> None:
+    """select(predicate, condition, **kwargs) combines all three."""
+    from nextorm.sql.nodes import BinOp, ColumnRef, Param
+
+    with db_session:
+        post = ColPost(title="Select Combined")
+    post.comments.add(ColComment(text="yes"))
+    post.comments.add(ColComment(text="no"))
+    post.comments.add(ColComment(text="maybe"))
+    cond = BinOp(ColumnRef("id"), ">", Param(value=0))
+    results = post.comments.select(  # pyright: ignore[reportUnknownLambdaType,reportUnknownMemberType]
+        lambda c: c.text != "no",  # pyright: ignore[reportUnknownLambdaType,reportUnknownMemberType]
+        cond,
+        text="yes",
+    ).fetch_all()
+    assert len(results) == 1
+    assert results[0].text == "yes"
+
+
+def test_collection_where_with_predicate(o2m_db: Database) -> None:
+    """where(lambda c: ...) filters collection via lambda predicate."""
+    with db_session:
+        post = ColPost(title="Where Pred")
+    post.comments.add(ColComment(text="yes"))
+    post.comments.add(ColComment(text="no"))
+    results = post.comments.where(lambda c: c.text == "yes").fetch_all()
+    assert len(results) == 1
+    assert results[0].text == "yes"
+
+
+def test_collection_filter_with_kwargs(o2m_db: Database) -> None:
+    """filter(text=...) filters collection via keyword equality."""
+    with db_session:
+        post = ColPost(title="Filter KW")
+    post.comments.add(ColComment(text="alpha"))
+    post.comments.add(ColComment(text="beta"))
+    results = post.comments.filter(text="alpha").fetch_all()
+    assert len(results) == 1
+    assert results[0].text == "alpha"
+
+
+# ---------------------------------------------------------------------------
+# filter() with callable predicate (lines 394-397)
+# ---------------------------------------------------------------------------
+
+
+def test_collection_where_with_callable_predicate(o2m_db: Database) -> None:
+    """where(lambda c: ...) triggers lambda predicate filtering."""
+    with db_session:
+        post = ColPost(title="Where Lambda")
+    post.comments.add(ColComment(text="yes"))
+    post.comments.add(ColComment(text="no"))
+    results = post.comments.where(  # pyright: ignore[reportUnknownLambdaType,reportUnknownMemberType]
+        lambda c: c.text == "yes"  # pyright: ignore[reportUnknownLambdaType,reportUnknownMemberType]
+    ).fetch_all()
+    assert len(results) == 1
+    assert results[0].text == "yes"
+
+
+# ---------------------------------------------------------------------------
+# filter() with extra positional conditions (line 402)
+# ---------------------------------------------------------------------------
+
+
+def test_collection_filter_with_extra_conditions(o2m_db: Database) -> None:
+    """filter(cond1, cond2) applies multiple SqlNode conditions."""
+    from nextorm.sql.nodes import BinOp, ColumnRef, Param
+
+    with db_session:
+        post = ColPost(title="Filter Extra")
+    post.comments.add(ColComment(text="alpha"))
+    post.comments.add(ColComment(text="beta"))
+    cond1 = BinOp(ColumnRef("id"), ">", Param(value=0))
+    cond2 = BinOp(ColumnRef("text"), "=", Param(value="alpha"))
+    results = post.comments.filter(cond1, cond2).fetch_all()
+    assert len(results) == 1
+    assert results[0].text == "alpha"
+
+
+# ---------------------------------------------------------------------------
+# remove() non-nullable FK → db.delete_instance (line 548)
+# ---------------------------------------------------------------------------
+
+
+class _RequiredPost(Entity):
+    _table_ = "_req_post"
+    title: Req[str]
+    items: Set["_RequiredItem"]  # noqa: UP037
+
+
+class _RequiredItem(Entity):
+    _table_ = "_req_item"
+    text: Req[str]
+    post: Single[_RequiredPost]  # NOT nullable → remove() should delete the item
+
+
+@pytest.fixture
+def req_o2m_db() -> Generator[Database, None, None]:
+    db = Database(entities=[_RequiredPost, _RequiredItem])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+    yield db
+    db.close()
+
+
+def test_o2m_remove_with_required_fk_deletes_item(req_o2m_db: Database) -> None:
+    """remove() with a non-nullable FK deletes the item via db.delete_instance (line 548)."""
+    with db_session:
+        post = _RequiredPost(title="P")
+    item = _RequiredItem(text="item")
+    post.items.add(item)
+    assert post.items.count() == 1
+    loaded = post.items.load()[0]
+    # Removing from non-nullable FK should delete the item
+    post.items.remove(loaded)
+    assert post.items.count() == 0
+
+
+# ---------------------------------------------------------------------------
+# _target_pk_col() returns "id" when target has no pk_fields (line 135)
+# ---------------------------------------------------------------------------
+
+
+def test_target_pk_col_returns_id_when_no_pk_fields(o2m_db: Database) -> None:
+    """_target_pk_col() returns 'id' when target entity has no _pk_fields_ (line 135)."""
+    from nextorm.collection import RelatedCollection
+    from nextorm.entity import RelationInfo
+    from nextorm.fields import RelationKind, RelationSpec
+
+    with db_session:
+        post = ColPost(title="PKless")
+
+    class _FakeTarget:
+        _pk_fields_: tuple[()] = ()
+        _table_name_ = "fake"
+
+    ri = RelationInfo("items", RelationSpec(kind=RelationKind.SET, target=ColComment))
+    col: RelatedCollection[Any] = RelatedCollection(post, ri, o2m_db)
+    col._resolve_target = lambda: _FakeTarget  # type: ignore[method-assign,return-value,assignment]
+    result = col._target_pk_col()
+    assert result == "id"
+
+
+# ---------------------------------------------------------------------------
+# _is_m2m(): reverse_name set but back_ri is None → fallback (line 114→117)
+# ---------------------------------------------------------------------------
+
+
+def test_is_m2m_reverse_name_set_but_back_ri_none_uses_fallback(o2m_db: Database) -> None:
+    """_is_m2m() when reverse is set but relation not found on target → fallback (line 114→117)."""
+    from nextorm.collection import RelatedCollection
+    from nextorm.entity import RelationInfo
+    from nextorm.fields import RelationKind, RelationSpec
+
+    with db_session:
+        post = ColPost(title="RevTest")
+
+    # Use reverse="nonexistent_name" so back_ri will be None
+    ri = RelationInfo(
+        "comments",
+        RelationSpec(kind=RelationKind.SET, target=ColComment, reverse="nonexistent_name"),
+    )
+    col: RelatedCollection[Any] = RelatedCollection(post, ri, o2m_db)
+    # ColComment has no Set pointing back at ColPost → fallback returns False (O2M)
+    result = col._is_m2m()
+    assert result is False
+
+
+# ---------------------------------------------------------------------------
+# _build_queryset() composite FK O2M (lines 197-209)
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# _build_queryset() composite FK O2M (lines 197-209)
+# ---------------------------------------------------------------------------
+
+
+def test_o2m_build_queryset_composite_fk_owner(o2m_db: Database) -> None:
+    """O2M _build_queryset with composite-PK owner builds AND conditions (lines 197-209)."""
+    from nextorm.collection import RelatedCollection
+    from nextorm.entity import RelationInfo
+    from nextorm.fields import RelationKind, RelationSpec
+
+    with db_session:
+        post = ColPost(title="CompFK")
+
+    post.comments.add(ColComment(text="child"))
+    ri = RelationInfo("comments", RelationSpec(kind=RelationKind.SET, target=ColComment))
+    col: RelatedCollection[Any] = RelatedCollection(post, ri, o2m_db)
+    col._is_m2m = lambda: False  # type: ignore[method-assign]
+    # Simulate composite PK: return tuple (id, id) so isinstance(pk, tuple) is True
+    real_pk = post.__dict__.get("_field_id") or 1
+    col._owner_pk = lambda: (real_pk,)  # type: ignore[method-assign]
+    # Triggers _build_queryset() → composite FK branch (1-elem tuple → equal len → no loop body)
+    results = col.load()
+    assert len(results) == 1
+
+
+def test_o2m_build_queryset_composite_fk_owner_multi_col(o2m_db: Database) -> None:
+    """Composite FK with 2+ columns exercises the inner loop body (line 204)."""
+    from nextorm.collection import RelatedCollection
+    from nextorm.entity import RelationInfo
+    from nextorm.fields import RelationKind, RelationSpec
+
+    with db_session:
+        post = ColPost(title="CompFK2")
+
+    post.comments.add(ColComment(text="c"))
+    ri = RelationInfo("comments", RelationSpec(kind=RelationKind.SET, target=ColComment))
+    col: RelatedCollection[Any] = RelatedCollection(post, ri, o2m_db)
+    col._is_m2m = lambda: False  # type: ignore[method-assign]
+    real_pk = post.__dict__.get("_field_id") or 1
+    # Simulate a 2-element composite PK → triggers the for-loop body in the AND builder
+    col._owner_pk = lambda: (real_pk, real_pk)  # type: ignore[method-assign]
+
+    # Also patch _derive_composite_fk_cols to return 2 columns matching the 2-element PK
+    import nextorm.entity as _entity_mod  # noqa: PLC0415
+
+    orig_derive = _entity_mod._derive_composite_fk_cols
+
+    def fake_derive(name: str, owner_cls: Any) -> list[str]:
+        return ["post_id", "post_id"]
+
+    _entity_mod._derive_composite_fk_cols = fake_derive  # type: ignore[assignment]
+    try:
+        results = col.load()
+    finally:
+        _entity_mod._derive_composite_fk_cols = orig_derive
+    assert len(results) == 1
+
+
+def test_o2m_build_queryset_composite_pk_len_mismatch_falls_through(o2m_db: Database) -> None:
+    """When composite PK tuple length != FK col count, falls through to simple FK (line 200→212)."""
+    from nextorm.collection import RelatedCollection
+    from nextorm.entity import RelationInfo
+    from nextorm.fields import RelationKind, RelationSpec
+    from nextorm.query import QuerySet
+
+    with db_session:
+        post = ColPost(title="CompFKMismatch")
+
+    ri = RelationInfo("comments", RelationSpec(kind=RelationKind.SET, target=ColComment))
+    col: RelatedCollection[Any] = RelatedCollection(post, ri, o2m_db)
+    col._is_m2m = lambda: False  # type: ignore[method-assign]
+    real_pk = post.__dict__.get("_field_id") or 1
+    # 2-element tuple → len mismatch with 1-element fk_col_names → falls through to simple FK
+    col._owner_pk = lambda: (real_pk, real_pk)  # type: ignore[method-assign]
+    # Just build the queryset (don't execute) to exercise the fallthrough branch
+    qs = col._build_queryset()
+    assert isinstance(qs, QuerySet)

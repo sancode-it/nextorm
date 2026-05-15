@@ -5,14 +5,20 @@ from __future__ import annotations
 import typing
 from typing import Any
 
-from nextorm.entity import Entity
+from nextorm.entity import (
+    Entity,
+    _derive_composite_fk_cols,
+    _LazyType,
+    _pk_col_for_field,
+    _resolve_entity_target,
+)
 from nextorm.fields import RelationKind
 from nextorm.schema.core import Column, ForeignKey, Index, Table
 
 __all__ = ["build_schema", "entity_to_table"]
 
 
-def _target_table_name(target: type[Any] | str | typing.ForwardRef | None) -> str:
+def _target_table_name(target: type[Any] | str | typing.ForwardRef | _LazyType | None) -> str:
     """Return the SQL table name for a relation target.
 
     Prefers the entity's ``_table_name_`` attribute when *target* is a concrete
@@ -20,7 +26,7 @@ def _target_table_name(target: type[Any] | str | typing.ForwardRef | None) -> st
     """
     if isinstance(target, str):
         return target.lower()
-    if isinstance(target, typing.ForwardRef):
+    if isinstance(target, (typing.ForwardRef, _LazyType)):
         return target.__forward_arg__.lower()
     if target is None:  # pragma: no cover
         return ""
@@ -32,7 +38,7 @@ def _target_table_name(target: type[Any] | str | typing.ForwardRef | None) -> st
 
 
 def _target_matches(
-    target: type[Any] | str | typing.ForwardRef | None, entity_cls: type[Any]
+    target: type[Any] | str | typing.ForwardRef | _LazyType | None, entity_cls: type[Any]
 ) -> bool:
     """Return True if *target* refers to *entity_cls* (handles forward-ref strings/ForwardRef)."""
     if target is None:  # pragma: no cover
@@ -41,7 +47,7 @@ def _target_matches(
         return True
     if isinstance(target, str):
         return target.lower() == entity_cls.__name__.lower()
-    if isinstance(target, typing.ForwardRef):
+    if isinstance(target, (typing.ForwardRef, _LazyType)):
         return target.__forward_arg__.lower() == entity_cls.__name__.lower()
     return False
 
@@ -116,8 +122,47 @@ def entity_to_table(
         # Skip non-owning back-ref side of a one-to-one pair
         if non_owning_singles and (table_name, ri.name) in non_owning_singles:
             continue
+        # Resolve target entity to check for composite PK
+        resolved_target = _resolve_entity_target(ri.spec.target)
+        target_pk_fields: tuple[str, ...] = (
+            getattr(resolved_target, "_pk_fields_", ()) if resolved_target is not None else ()
+        )
+        is_composite_target = len(target_pk_fields) > 1
         # Support columns (composite FK) or column (single FK)
-        col_names = ri.spec.columns if ri.spec.columns else [ri.spec.column or f"{ri.name}_id"]
+        if ri.spec.columns:
+            col_names = ri.spec.columns
+            # user-specified columns; assume simple refs
+            ref_cols: list[str] = ["id"] * len(col_names)
+        elif is_composite_target and resolved_target is not None:
+            # Auto-derive multi-column FK for composite-PK target
+            col_names = _derive_composite_fk_cols(ri.name, resolved_target)
+            # Derive corresponding reference column names in the target table
+            ref_cols = []
+            for fname in target_pk_fields:
+                t_fields = getattr(resolved_target, "_fields_", {})
+                t_relations = getattr(resolved_target, "_relations_", {})
+                if fname in t_fields:
+                    ref_cols.append(t_fields[fname].spec.column or fname)
+                elif fname in t_relations:
+                    ref_cols.append(t_relations[fname].spec.column or f"{fname}_id")
+                else:  # pragma: no cover — PK field must be a field or relation
+                    ref_cols.append(f"{fname}_id")
+        else:
+            col_names = [ri.spec.column or f"{ri.name}_id"]
+            # Determine the actual PK column on the target table (may not be "id").
+            if resolved_target is not None and target_pk_fields:
+                pk_fname = target_pk_fields[0]
+                t_fields = getattr(resolved_target, "_fields_", {})
+                t_relations = getattr(resolved_target, "_relations_", {})
+                if pk_fname in t_fields:
+                    _ref_col: str = t_fields[pk_fname].spec.column or pk_fname
+                elif pk_fname in t_relations:
+                    _ref_col = t_relations[pk_fname].spec.column or f"{pk_fname}_id"
+                else:  # pragma: no cover — PK field must be a field or relation
+                    _ref_col = pk_fname
+                ref_cols = [_ref_col]
+            else:
+                ref_cols = ["id"]
         ref_table = _target_table_name(ri.spec.target)
         nullable: bool = ri.spec.nullable
         # Derive ON DELETE action: explicit override > nullability default
@@ -131,7 +176,7 @@ def entity_to_table(
         unique = is_one_to_one is not None and (table_name, ri.name) in is_one_to_one
         # If this relation is part of the composite PK, mark the FK column as primary_key
         is_pk_part = ri.name in pk_rel_names
-        for col_name in col_names:
+        for col_name, ref_col in zip(col_names, ref_cols, strict=True):
             fk_col = Column(
                 name=col_name,
                 py_type=int,
@@ -146,7 +191,7 @@ def entity_to_table(
                     name=fk_name,
                     column=col_name,
                     ref_table=ref_table,
-                    ref_column="id",
+                    ref_column=ref_col,
                     on_delete=on_delete,
                 )
             )
@@ -173,7 +218,7 @@ def _resolve_target_cls(
     """Resolve a relation target to an entity class from *entities*."""
     if isinstance(target, str):
         return next((e for e in entities if e.__name__.lower() == target.lower()), None)
-    if isinstance(target, typing.ForwardRef):
+    if isinstance(target, (typing.ForwardRef, _LazyType)):
         name = target.__forward_arg__.lower()
         return next((e for e in entities if e.__name__.lower() == name), None)
     return target if target in entities else None
@@ -201,6 +246,7 @@ def build_schema(entities: list[type[Entity]]) -> dict[str, Table]:
     non_owning_singles: set[tuple[str, str]] = set()
     is_one_to_one: set[tuple[str, str]] = set()
     seen_o2o: set[frozenset[tuple[str, str]]] = set()
+    seen_single_set_pairs: set[tuple[str, str, str, str]] = set()
 
     for entity_cls in entities:
         for ri in entity_cls._relations_.values():
@@ -209,6 +255,73 @@ def build_schema(entities: list[type[Entity]]) -> dict[str, Table]:
             target_cls = _resolve_target_cls(ri.spec.target, entities)
             if target_cls is None:
                 continue
+
+            # Check if this Single has an explicit reverse parameter
+            # If so, look for a matching Set or Single on the target entity
+            reverse_name = getattr(ri.spec, "reverse", None)
+            if reverse_name:
+                back_ri = target_cls._relations_.get(reverse_name)
+                if back_ri:
+                    # Case 1: Single-Set pair (Many-to-One with collection)
+                    if back_ri.spec.kind == RelationKind.SET and _target_matches(
+                        back_ri.spec.target, entity_cls
+                    ):
+                        # Explicit Single-Set pair found via reverse parameter
+                        pair_key = (
+                            entity_cls._table_name_,
+                            ri.name,
+                            target_cls._table_name_,
+                            back_ri.name,
+                        )
+                        if pair_key not in seen_single_set_pairs:  # pragma: no branch
+                            seen_single_set_pairs.add(pair_key)
+                            # Single is owning side of M2O; Set is non-owning collection
+                            # Do NOT add to is_one_to_one - this is M2O, not O2O
+                        continue
+
+                    # Case 2: Single-Single pair with mutual reverse declarations (O2O)
+                    if back_ri.spec.kind == RelationKind.SINGLE and _target_matches(
+                        back_ri.spec.target, entity_cls
+                    ):
+                        back_reverse = getattr(back_ri.spec, "reverse", None)
+                        # Both sides declare reverse pointing at each other
+                        if back_reverse == ri.name:
+                            pair = frozenset(
+                                {
+                                    (entity_cls._table_name_, ri.name),
+                                    (target_cls._table_name_, back_ri.name),
+                                }
+                            )
+                            if pair not in seen_o2o:
+                                seen_o2o.add(pair)
+
+                                a_name, a_ri = entity_cls._table_name_, ri
+                                b_name, b_ri = target_cls._table_name_, back_ri
+
+                                # Owning-side rule: explicit owner parameter or nullability
+                                if a_ri.spec.owner is True or b_ri.spec.owner is False:
+                                    owner, owner_ri = a_name, a_ri
+                                    non_owner, non_owner_ri = b_name, b_ri
+                                elif b_ri.spec.owner is True or a_ri.spec.owner is False:
+                                    owner, owner_ri = b_name, b_ri
+                                    non_owner, non_owner_ri = a_name, a_ri
+                                elif not a_ri.spec.nullable and b_ri.spec.nullable:
+                                    owner, owner_ri = a_name, a_ri
+                                    non_owner, non_owner_ri = b_name, b_ri
+                                elif a_ri.spec.nullable and not b_ri.spec.nullable:
+                                    owner, owner_ri = b_name, b_ri
+                                    non_owner, non_owner_ri = a_name, a_ri
+                                elif a_name <= b_name:
+                                    owner, owner_ri = a_name, a_ri
+                                    non_owner, non_owner_ri = b_name, b_ri
+                                else:
+                                    owner, owner_ri = b_name, b_ri
+                                    non_owner, non_owner_ri = a_name, a_ri
+
+                                is_one_to_one.add((owner, owner_ri.name))
+                                non_owning_singles.add((non_owner, non_owner_ri.name))
+                            continue
+
             # Look for a matching Single on the other side pointing back
             back_ri = next(
                 (
@@ -343,6 +456,11 @@ def build_schema(entities: list[type[Entity]]) -> dict[str, Table]:
             seen.add(m2m_pair)
             # Allow explicit join table name via RelationSpec.table
             join_name = ri.spec.table or "_".join(sorted(m2m_pair))
+            # Resolve actual PK column names for each side
+            pk_fields_a = entity_cls._pk_fields_
+            pk_fields_b = target_cls._pk_fields_
+            ref_col_a = _pk_col_for_field(entity_cls, pk_fields_a[0]) if pk_fields_a else "id"
+            ref_col_b = _pk_col_for_field(target_cls, pk_fields_b[0]) if pk_fields_b else "id"
             # Use reverse/reverse_column/reverse_columns if present for join columns
             # Prefer explicit columns, else default to <table>_id
             col_a = None
@@ -373,14 +491,14 @@ def build_schema(entities: list[type[Entity]]) -> dict[str, Table]:
                         name=f"fk_{join_name}__{col_a}",
                         column=col_a,
                         ref_table=table_a,
-                        ref_column="id",
+                        ref_column=ref_col_a,
                         on_delete="CASCADE",
                     ),
                     ForeignKey(
                         name=f"fk_{join_name}__{col_b}",
                         column=col_b,
                         ref_table=table_b,
-                        ref_column="id",
+                        ref_column=ref_col_b,
                         on_delete="CASCADE",
                     ),
                 ],

@@ -34,6 +34,8 @@ from nextorm.sql.nodes import (
     Cast,
     ColumnRef,
     Delete,
+    ExistsNode,
+    FuncCall,
     FunctionCall,
     Insert,
     Literal,
@@ -82,6 +84,10 @@ class SQLBuilder(ABC):
                 self._emit_param(node, parts, params)
             case Literal():
                 self._emit_literal(node, parts, params)
+            case FuncCall():
+                self._emit_func_call(node, parts, params)
+            case ExistsNode():
+                self._emit_exists(node, parts, params)
             case ColumnRef():
                 self._emit_column_ref(node, parts, params)
             case Star():
@@ -123,10 +129,51 @@ class SQLBuilder(ABC):
     def _param_placeholder(self, name: str | None) -> str:
         """Return the placeholder string for a single parameter."""
 
+    def _quote_identifier(self, name: str) -> str:
+        """Return *name* double-quoted if it is a reserved SQL keyword, else as-is.
+
+        Only keywords that are STRICT reserved words (cannot appear as
+        unquoted identifiers) across SQLite, PostgreSQL, and MariaDB are
+        included.  Subclasses may override to use dialect-specific quoting
+        (e.g. backtick for MariaDB/MySQL).
+        """
+        # Strict reserved keywords that cannot be used as unquoted table/column names.
+        # These are words that cause syntax errors when used bare as identifiers.
+        _RESERVED = frozenset(
+            {
+                "order",
+                "group",
+                "select",
+                "from",
+                "where",
+                "table",
+                "index",
+                "check",
+                "by",
+                "case",
+                "default",
+                "values",
+                "into",
+                "all",
+                "and",
+                "or",
+                "not",
+                "null",
+                "union",
+                "intersect",
+                "except",
+                "with",
+                "transaction",
+            }
+        )
+        return f'"{name}"' if name.lower() in _RESERVED else name
+
     def _emit_param(self, node: Param, parts: list[str], params: list[Any]) -> None:
         parts.append(self._param_placeholder(node.name))
         if node.has_value:
-            params.append(node.value)
+            from nextorm.fields import _serialize_value  # noqa: PLC0415
+
+            params.append(_serialize_value(node.value))
 
     def _emit_literal(self, node: Literal, parts: list[str], params: list[Any]) -> None:
         val = node.value
@@ -142,9 +189,18 @@ class SQLBuilder(ABC):
             escaped = str(val).replace("'", "''")
             parts.append(f"'{escaped}'")
 
+    def _emit_func_call(self, node: FuncCall, parts: list[str], params: list[Any]) -> None:
+        parts.append(f"{node.func}(")
+        self._emit(node.arg, parts, params)
+        parts.append(")")
+
+    def _emit_exists(self, node: ExistsNode, parts: list[str], params: list[Any]) -> None:
+        parts.append(f"EXISTS ({node.sql})")
+        params.extend(node.params)
+
     def _emit_column_ref(self, node: ColumnRef, parts: list[str], params: list[Any]) -> None:
         if node.table:
-            parts.append(f"{node.table}.{node.column}")
+            parts.append(f"{self._quote_identifier(node.table)}.{node.column}")
         else:
             parts.append(node.column)
 
@@ -267,11 +323,11 @@ class SQLBuilder(ABC):
             if i:
                 parts.append(", ")
             self._emit(col, parts, params)
-        parts.append(f" FROM {node.from_table}")
+        parts.append(f" FROM {self._quote_identifier(node.from_table)}")
         if node.from_alias:
             parts.append(f" AS {node.from_alias}")
         for join_type, join_table, join_alias, join_cond in node.joins:
-            parts.append(f" {join_type} JOIN {join_table}")
+            parts.append(f" {join_type} JOIN {self._quote_identifier(join_table)}")
             if join_alias:
                 parts.append(f" AS {join_alias}")
             parts.append(" ON ")
@@ -320,7 +376,7 @@ class SQLBuilder(ABC):
 
     def _emit_insert(self, node: Insert, parts: list[str], params: list[Any]) -> None:
         cols = ", ".join(node.columns)
-        parts.append(f"INSERT INTO {node.table} ({cols}) ")
+        parts.append(f"INSERT INTO {self._quote_identifier(node.table)} ({cols}) ")
         if isinstance(node.values, Select):
             self._emit_select(node.values, parts, params)
         else:
@@ -339,7 +395,7 @@ class SQLBuilder(ABC):
         parts.append(f" RETURNING {column}")
 
     def _emit_update(self, node: Update, parts: list[str], params: list[Any]) -> None:
-        parts.append(f"UPDATE {node.table} SET ")
+        parts.append(f"UPDATE {self._quote_identifier(node.table)} SET ")
         for i, (col, val) in enumerate(node.assignments):
             if i:
                 parts.append(", ")
@@ -350,7 +406,7 @@ class SQLBuilder(ABC):
             self._emit(node.where, parts, params)
 
     def _emit_delete(self, node: Delete, parts: list[str], params: list[Any]) -> None:
-        parts.append(f"DELETE FROM {node.table}")
+        parts.append(f"DELETE FROM {self._quote_identifier(node.table)}")
         if node.where is not None:
             parts.append(" WHERE ")
             self._emit(node.where, parts, params)

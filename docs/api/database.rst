@@ -35,3 +35,7 @@ Database
    nextorm.database.Database.clear_local_stats
    nextorm.database.Database.merge_local_stats
    nextorm.database.Database.get_connection
+   nextorm.database.Database.create_tables
+   nextorm.database.Database.drop_table
+   nextorm.database.Database.drop_all_tables
+   nextorm.database.Database.disconnect

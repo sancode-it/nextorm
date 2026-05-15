@@ -34,6 +34,12 @@ if TYPE_CHECKING:
 # canonical hyphenated hex string ("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx").
 sqlite3.register_adapter(_uuid_stdlib.UUID, str)
 
+# Register datetime adapter: explicitly convert to ISO format string.
+sqlite3.register_adapter(datetime.datetime, lambda dt: dt.replace(tzinfo=None).isoformat())
+
+# Register date adapter: explicitly convert to ISO format string.
+sqlite3.register_adapter(datetime.date, lambda d: d.isoformat())
+
 # Register timedelta adapter: sqlite3 stores as INTEGER microseconds.
 # Read-back returns int; the application is responsible for converting back to timedelta.
 sqlite3.register_adapter(
@@ -146,7 +152,12 @@ class SQLiteSyncProvider(SyncProvider):
 
         Parameters are forwarded directly to :func:`sqlite3.connect`; the
         first positional argument is the database path or ``":memory:"``.
+
+        The keyword argument ``filename`` is accepted as an alias for
+        ``database`` for compatibility with Pony ORM-style configurations.
         """
+        if "filename" in kwargs and not args:
+            kwargs["database"] = kwargs.pop("filename")
         return SQLiteSyncConnection(sqlite3.connect(*args, **kwargs))
 
     def execute_ddl(self, connection: SyncConnection, statements: list[str]) -> None:
@@ -281,11 +292,16 @@ class SQLiteAsyncProvider(AsyncProvider):
         Parameters are forwarded to :func:`aiosqlite.connect`; the first
         positional argument is the database path or ``":memory:"``.
 
+        The keyword argument ``filename`` is accepted as an alias for
+        ``database`` for compatibility with Pony ORM-style configurations.
+
         Raises
         ------
         RuntimeError
             If ``aiosqlite`` is not installed.
         """
+        if "filename" in kwargs and not args:
+            kwargs["database"] = kwargs.pop("filename")
         try:
             import aiosqlite as _ao  # noqa: PLC0415
         except ImportError as exc:  # pragma: no cover
@@ -294,7 +310,7 @@ class SQLiteAsyncProvider(AsyncProvider):
                 "Install with: pip install nextorm[sqlite]"
             ) from exc
         raw_conn = _ao.connect(*args, **kwargs)
-        await raw_conn  # calls Connection.__await__() to open the connection
+        await raw_conn  # calls Connection.__await__date() to open the connection
         return SQLiteAsyncConnection(raw_conn)
 
     async def execute_ddl(self, connection: AsyncConnection, statements: list[str]) -> None:

@@ -97,9 +97,54 @@ Collections have full query-builder support:
 
 .. code-block:: python
 
-   active = post.comments.filter(Comment.approved == True).fetch_all()
-   first  = post.comments.order_by(Comment.created_at.asc()).first()
-   page2  = post.comments.page(2, pagesize=10)
+   # Get the whole collection as a QuerySet (for chaining)
+   qs = post.comments.select()
+
+   # Filter with SqlNode conditions or keyword equality shortcuts
+   active  = post.comments.filter(Comment.approved == True).fetch_all()
+   active  = post.comments.filter(approved=True).fetch_all()
+
+   # Filter with a lambda predicate
+   hot = post.comments.where(lambda c: c.score > 100).fetch_all()
+
+   # All combined in select()
+   post.comments.select(
+       lambda c: c.score > 5,
+       Comment.approved == True,
+       spam=False,
+   ).fetch_all()
+
+.. list-table:: Collection query methods
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Method
+     - Description
+   * - ``col.select()``
+     - Unfiltered :class:`~nextorm.query.QuerySet` — use when you need the whole collection as a QuerySet
+   * - ``col.select(predicate, *conditions, **kwargs)``
+     - Unified entry point: predicate, SqlNode conditions, and/or equality kwargs — all combined with AND
+   * - ``col.filter(*conditions, **kwargs)``
+     - Filter by ``SqlNode`` conditions and/or keyword equality shortcuts
+   * - ``col.where(lambda c: ...)``
+     - Filter with a lambda predicate (bytecode decompilation)
+   * - ``col.order_by(...)``
+     - Ordered :class:`~nextorm.query.QuerySet`
+   * - ``col.page(n, pagesize)``
+     - Paginated :class:`~nextorm.query.QuerySet`
+   * - ``col.count()``
+     - ``SELECT COUNT(*)`` without loading objects
+   * - ``col.is_empty()``
+     - ``True`` when the collection has no items
+   * - ``col.load()``
+     - Eagerly load all items, return as ``list``
+
+.. note::
+
+   ``select()``, ``filter()``, and ``where()`` mirror the same-named methods on
+   :class:`~nextorm.query.QuerySet` and :class:`~nextorm.entity.Entity`, so the
+   usage pattern is consistent regardless of whether you are querying a top-level
+   entity or a relation.
 
 Mutating collections
 --------------------

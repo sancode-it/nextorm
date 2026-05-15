@@ -35,6 +35,62 @@ logging to a specific block:
    with sql_debugging():
        result = db.select(User).filter(User.id == 1).fetch_one()
 
+SQL capture (for tests)
+-----------------------
+
+:class:`~nextorm.debug.capture_sql` records every SQL statement executed
+within its scope into a :class:`~nextorm.debug.CapturedQuery` list — no
+mocking needed:
+
+.. code-block:: python
+
+   from nextorm import capture_sql
+
+   with capture_sql() as queries:
+       db.select(User).fetch_all()
+       db.select(Post).filter(Post.draft == False).fetch_all()
+
+   assert len(queries) == 2
+   assert "WHERE" in queries[1].sql
+   assert queries[1].params == [False]
+
+Each :class:`~nextorm.debug.CapturedQuery` has ``.sql`` and ``.params``
+attributes; ``str(q)`` formats both for quick printing.
+
+Nesting is supported; only the innermost context captures queries.
+
+.. note::
+
+   ``capture_sql`` is **sync-only** — it uses a thread-local stack and
+   does not intercept queries issued by
+   :class:`~nextorm.async_database.AsyncDatabase`. For async contexts use
+   :class:`~nextorm.debug.async_capture_sql` instead.
+
+Async SQL capture
+~~~~~~~~~~~~~~~~~
+
+:class:`~nextorm.debug.async_capture_sql` is the async counterpart of
+:class:`~nextorm.debug.capture_sql`. It uses a :class:`contextvars.ContextVar`
+so it works correctly across ``await`` boundaries:
+
+.. code-block:: python
+
+   from nextorm import async_capture_sql
+
+   async with async_capture_sql() as queries:
+       await db.aselect(User).fetch_all()
+       await db.aselect(Post).filter(Post.draft == False).fetch_all()
+
+   assert len(queries) == 2
+   assert "WHERE" in queries[1].sql
+
+.. note::
+
+   ``async_capture_sql`` only captures queries issued by
+   :class:`~nextorm.async_database.AsyncDatabase`. It does **not** capture
+   sync queries from :class:`~nextorm.database.Database`. Use
+   :class:`~nextorm.debug.capture_sql` for those.
+
 Show SQL inline
 ---------------
 
@@ -109,7 +165,10 @@ Inspect the most recent SQL statement executed by a database instance:
 Async equivalent
 ----------------
 
-All debug utilities work identically with :class:`~nextorm.async_database.AsyncDatabase`:
+Most debug utilities work identically with
+:class:`~nextorm.async_database.AsyncDatabase`. The exception is
+:class:`~nextorm.debug.capture_sql`, which is sync-only; use
+:class:`~nextorm.debug.async_capture_sql` for async contexts.
 
 .. code-block:: python
 

@@ -39,17 +39,20 @@ pip install "nextorm[sqlite,postgres,mariadb]"   # all drivers
 ```python
 from nextorm import Database, Entity, PK, Req, Opt, Set, Single, db_session
 
+
 # Define entities — no database coupling required
 class Tag(Entity):
     name: Req[str]
-    products: Set["Product"]   # many-to-many back-reference
+    products: Set["Product"]  # many-to-many back-reference
+
 
 class Product(Entity):
-    name:    Req[str](64)      # positional shorthand: max_len=64
-    price:   Req[float]
-    sku:     Req[str] = Req(column="product_sku", unique=True)  # marker-call options
-    tags:    Set[Tag]  # many-to-many
+    name: Req[str](64)  # positional shorthand: max_len=64
+    price: Req[float]
+    sku: Req[str] = Req(column="product_sku", unique=True)  # marker-call options
+    tags: Set[Tag]  # many-to-many
     summary: Opt[str]  # Opt[str]/[LongStr] use empty string for None by default
+
 
 # Create and connect the database
 db = Database(entities=[Tag, Product])  # entities can also be auto-discovered
@@ -65,8 +68,8 @@ with db_session:
 
 # Read — class-level shortcuts (no explicit db reference needed)
 widgets = Product.select().filter(Product.price < 20).fetch_all()
-widget  = Product.get(name="Widget")   # None if not found
-widget  = Product[1]                   # KeyError if not found
+widget = Product.get(name="Widget")  # None if not found
+widget = Product[1]  # KeyError if not found
 ```
 
 ## Async quick start
@@ -75,9 +78,11 @@ widget  = Product[1]                   # KeyError if not found
 import asyncio
 from nextorm import AsyncDatabase, Entity, PK, Req, db_session
 
+
 class Task(Entity):
     title: Req[str]
-    done:  Req[bool]
+    done: Req[bool]
+
 
 async def main() -> None:
     db = AsyncDatabase(entities=[Task])
@@ -88,8 +93,9 @@ async def main() -> None:
         Task(title="Buy milk", done=False)
 
     pending = await Task.aselect().filter(Task.done == False).fetch_all()
-    task    = await Task.aget(title="Buy milk")   # None if not found
+    task = await Task.aget(title="Buy milk")  # None if not found
     print(pending)
+
 
 asyncio.run(main())
 ```

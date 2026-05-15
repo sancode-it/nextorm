@@ -28,7 +28,7 @@ Usage::
 from __future__ import annotations
 
 import sys
-from typing import IO, TYPE_CHECKING, Any, cast
+from typing import IO, TYPE_CHECKING, Any, cast, overload
 
 from nextorm.entity import _LAZY_SENTINEL, Entity
 from nextorm.fields import RelationKind
@@ -55,6 +55,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from nextorm.database import Database
+    from nextorm.entity import RelationInfo
+    from nextorm.expr import ColumnExpr as _ColumnExprT
 
 __all__ = ["QuerySet", "EntityProxy"]
 
@@ -89,20 +91,175 @@ class EntityProxy:
         return _CE(name, object.__getattribute__(self, "_table_name"))
 
 
+# ---------------------------------------------------------------------------
+# order_by() relation-chain proxy helpers
+# ---------------------------------------------------------------------------
+
+
+class _OrderAccumulator:
+    """Collects JOIN specs accumulated while evaluating an ``order_by`` lambda."""
+
+    __slots__ = ("_seen", "joins")
+
+    def __init__(self) -> None:
+        self._seen: set[tuple[str, str]] = set()
+        self.joins: list[tuple[str, str, str | None, Any]] = []
+
+    def add_join(self, from_table: str, table_name: str, on: Any) -> None:
+        """Add a JOIN if the (from_table, table_name) pair has not been seen yet."""
+        key = (from_table, table_name)
+        if key not in self._seen:
+            self._seen.add(key)
+            self.joins.append(("INNER", table_name, None, on))
+
+
+def _resolve_order_attr(
+    current_cls: Any,
+    current_table: str,
+    name: str,
+    accum: _OrderAccumulator,
+) -> Any:
+    """Resolve *name* on *current_cls* for use inside an ``order_by`` lambda.
+
+    * If *name* is a ``Single`` relation, the required JOIN is registered in
+      *accum* and a :class:`_OrderByRelProxy` for the target entity is returned
+      so the caller can continue chaining.
+    * Otherwise *name* is treated as a scalar field and a
+      :class:`~nextorm.expr.ColumnExpr` is returned.
+    """
+    from nextorm.entity import _resolve_entity_target  # noqa: PLC0415
+    from nextorm.expr import ColumnExpr  # noqa: PLC0415
+
+    relations: dict[str, Any] = getattr(current_cls, "_relations_", {})
+    if name in relations:
+        ri = relations[name]
+        if ri.spec.kind == RelationKind.SINGLE:
+            target_cls = _resolve_entity_target(ri.spec.target)
+            if target_cls is not None:  # pragma: no branch
+                target_table: str = target_cls._table_name_
+                fk_col = ri.spec.column or f"{name}_id"
+                pk_fields: tuple[str, ...] = getattr(target_cls, "_pk_fields_", ())
+                if pk_fields:  # pragma: no branch
+                    pk_attr = pk_fields[0]
+                    if pk_attr in target_cls._fields_:
+                        pk_col = target_cls._fields_[pk_attr].spec.column or pk_attr
+                    else:
+                        rel_pk = target_cls._relations_.get(pk_attr)
+                        pk_col = (rel_pk.spec.column if rel_pk else None) or f"{pk_attr}_id"
+                    on = BinOp(
+                        ColumnRef(fk_col, current_table),
+                        "=",
+                        ColumnRef(pk_col, target_table),
+                    )
+                    accum.add_join(current_table, target_table, on)
+                return _OrderByRelProxy(target_cls, target_table, accum)
+
+    fields: dict[str, Any] = getattr(current_cls, "_fields_", {})
+    col = fields[name].spec.column or name if name in fields else name
+    return ColumnExpr(col, current_table)
+
+
+class _OrderByRelProxy:
+    """Proxy returned when traversing a relation inside an ``order_by`` lambda.
+
+    Supports further chained attribute access so that expressions like
+    ``ci.product_variation.product.shop.slug`` work correctly — each
+    intermediate step registers the required JOIN in *accum* and the final
+    step returns a :class:`~nextorm.expr.ColumnExpr`.
+    """
+
+    __slots__ = ("_accum", "_current_cls", "_current_table")
+
+    def __init__(self, current_cls: Any, current_table: str, accum: _OrderAccumulator) -> None:
+        object.__setattr__(self, "_current_cls", current_cls)
+        object.__setattr__(self, "_current_table", current_table)
+        object.__setattr__(self, "_accum", accum)
+
+    def __getattr__(self, name: str) -> Any:
+        current_cls = object.__getattribute__(self, "_current_cls")
+        current_table = object.__getattribute__(self, "_current_table")
+        accum = object.__getattribute__(self, "_accum")
+        return _resolve_order_attr(current_cls, current_table, name, accum)
+
+
+class _OrderByProxy:
+    """Entity-aware proxy for ``order_by`` lambdas.
+
+    Unlike :class:`EntityProxy` (which is used for ``where`` lambdas and only
+    supports single-level attribute access), this proxy knows the entity class
+    and delegates to :func:`_resolve_order_attr` so that multi-level relation
+    traversals (e.g. ``ci.product_variation.product.shop.slug``) are resolved
+    into appropriate JOINs and a terminal
+    :class:`~nextorm.expr.ColumnExpr`.
+    """
+
+    __slots__ = ("_accum", "_entity_cls")
+
+    def __init__(self, entity_cls: Any, accum: _OrderAccumulator) -> None:
+        object.__setattr__(self, "_entity_cls", entity_cls)
+        object.__setattr__(self, "_accum", accum)
+
+    def __getattr__(self, name: str) -> Any:
+        entity_cls = object.__getattribute__(self, "_entity_cls")
+        accum = object.__getattribute__(self, "_accum")
+        return _resolve_order_attr(entity_cls, entity_cls._table_name_, name, accum)
+
+
+def _is_non_owning_single(ri: RelationInfo, source_cls: type[Entity]) -> bool:
+    """Return ``True`` when this ``Single`` relation is the non-owning back-ref side.
+
+    For O2O relations where the target entity has a relation-based PK that
+    points back to the source (e.g. ``Config.shop: PK[Shop]``), the FK lives
+    on the *target's* table, not the source's table.  In this case the source
+    entity should NOT expose a FK column in its ``SELECT`` list.
+    """
+    from nextorm.entity import _matches_entity, _resolve_entity_target  # noqa: PLC0415
+
+    target_cls = _resolve_entity_target(ri.spec.target)
+    if target_cls is None:
+        return False
+    # Check if the target's single PK field is a relation pointing back to source
+    pk_field = getattr(target_cls, "_pk_field_", None)
+    if pk_field is None:
+        return False
+    target_relations = getattr(target_cls, "_relations_", {})
+    if pk_field not in target_relations:
+        return False
+    pk_ri = target_relations[pk_field]
+    if (
+        pk_ri.spec.kind != RelationKind.SINGLE
+    ):  # pragma: no cover — PK[T] always creates a SINGLE relation
+        return False
+    return bool(_matches_entity(pk_ri.spec.target, source_cls))
+
+
 def _build_column_map_from_names(entity_cls: type[Entity], col_names: list[str]) -> list[str | None]:
     """Build a column-index → entity-field-name map from cursor description names.
 
     Used by :meth:`QuerySet.raw` to match raw-SQL result columns to entity
     fields by name rather than by position.
     """
+    from nextorm.entity import _derive_composite_fk_cols, _resolve_entity_target  # noqa: PLC0415
+
     col_to_field: dict[str, str] = {}
     for fi in entity_cls._fields_.values():
         col_name = fi.spec.column or fi.name
         col_to_field[col_name] = fi.name
     for ri in entity_cls._relations_.values():
         if ri.spec.kind == RelationKind.SINGLE:
-            fk_col = ri.spec.column or f"{ri.name}_id"
-            col_to_field[fk_col] = f"_{ri.name}_id"
+            if _is_non_owning_single(ri, entity_cls):
+                continue  # FK lives on the target's table, not ours
+            target_cls = _resolve_entity_target(ri.spec.target)
+            if target_cls is not None and len(getattr(target_cls, "_pk_fields_", ())) > 1:
+                # Composite FK — encode each component column with position info
+                fk_col_names = _derive_composite_fk_cols(ri.name, target_cls)
+                total = len(fk_col_names)
+                fk_key = f"_{ri.name}_id"
+                for i, fk_col in enumerate(fk_col_names):
+                    col_to_field[fk_col] = f"{fk_key}\x1f{i}\x1f{total}"
+            else:
+                fk_col = ri.spec.column or f"{ri.name}_id"
+                col_to_field[fk_col] = f"_{ri.name}_id"
     return [col_to_field.get(name) for name in col_names]
 
 
@@ -114,7 +271,14 @@ def _build_column_map(entity_cls: type[Entity], table: Table) -> list[str | None
     ``'_<rel>_id'`` so that :class:`~nextorm.entity.SingleDescriptor` can
     find them.  All other columns (e.g. from joined tables) map to ``None``
     and are silently skipped during row hydration.
+
+    For composite-FK relations (i.e. ``Single[T]`` where ``T`` has a composite
+    primary key), each component column maps to a special encoded string of the
+    form ``"_<rel>_id\\x1f<index>\\x1f<total>"`` so that :meth:`QuerySet._map_row`
+    can reconstruct the tuple FK value.
     """
+    from nextorm.entity import _derive_composite_fk_cols, _resolve_entity_target  # noqa: PLC0415
+
     col_to_field: dict[str, str] = {}
     for fi in entity_cls._fields_.values():
         col_name = fi.spec.column or fi.name
@@ -122,8 +286,19 @@ def _build_column_map(entity_cls: type[Entity], table: Table) -> list[str | None
     # FK columns from Single relations
     for ri in entity_cls._relations_.values():
         if ri.spec.kind == RelationKind.SINGLE:
-            fk_col = ri.spec.column or f"{ri.name}_id"
-            col_to_field[fk_col] = f"_{ri.name}_id"
+            if _is_non_owning_single(ri, entity_cls):
+                continue  # FK lives on the target's table, not ours
+            target_cls = _resolve_entity_target(ri.spec.target)
+            if target_cls is not None and len(getattr(target_cls, "_pk_fields_", ())) > 1:
+                # Composite FK — encode each component column with position info
+                fk_col_names = _derive_composite_fk_cols(ri.name, target_cls)
+                total = len(fk_col_names)
+                fk_key = f"_{ri.name}_id"
+                for i, fk_col in enumerate(fk_col_names):
+                    col_to_field[fk_col] = f"{fk_key}\x1f{i}\x1f{total}"
+            else:
+                fk_col = ri.spec.column or f"{ri.name}_id"
+                col_to_field[fk_col] = f"_{ri.name}_id"
     return [col_to_field.get(col.name) for col in table.columns]
 
 
@@ -141,6 +316,8 @@ def _build_explicit_column_map(
         Parallel list of field-name strings (or ``'_<rel>_id'`` for FK
         columns) in the same positional order as *columns*.
     """
+    from nextorm.entity import _derive_composite_fk_cols, _resolve_entity_target  # noqa: PLC0415
+
     cols: list[ColumnRef] = []
     col_map: list[str | None] = []
     for fi in entity_cls._fields_.values():
@@ -150,10 +327,76 @@ def _build_explicit_column_map(
             col_map.append(fi.name)
     for ri in entity_cls._relations_.values():
         if ri.spec.kind == RelationKind.SINGLE:
-            fk_col = ri.spec.column or f"{ri.name}_id"
-            cols.append(ColumnRef(fk_col))
-            col_map.append(f"_{ri.name}_id")
+            if _is_non_owning_single(ri, entity_cls):
+                continue  # FK lives on the target's table, not ours
+            target_cls = _resolve_entity_target(ri.spec.target)
+            if target_cls is not None and len(getattr(target_cls, "_pk_fields_", ())) > 1:
+                fk_col_names = _derive_composite_fk_cols(ri.name, target_cls)
+                total = len(fk_col_names)
+                fk_key = f"_{ri.name}_id"
+                for i, fk_col in enumerate(fk_col_names):
+                    cols.append(ColumnRef(fk_col))
+                    col_map.append(f"{fk_key}\x1f{i}\x1f{total}")
+            else:
+                fk_col = ri.spec.column or f"{ri.name}_id"
+                cols.append(ColumnRef(fk_col))
+                col_map.append(f"_{ri.name}_id")
     return tuple(cols), col_map
+
+
+def _normalize_order_items(
+    items: tuple[Any, ...],
+    table_name: str,
+    entity_cls: type[Entity] | None = None,
+) -> tuple[tuple[OrderItem, ...], list[tuple[str, str, str | None, Any]]]:
+    """Normalise the ``*items`` argument of ``order_by()`` into ``OrderItem`` objects.
+
+    Accepted forms:
+
+    * ``order_by(*items)`` where each item is an
+      :class:`~nextorm.sql.nodes.OrderItem` or a bare
+      :class:`~nextorm.expr.ColumnExpr` (auto-wrapped as ``ASC``).
+    * ``order_by(func)`` where *func* is a callable (lambda).  It is called
+      with an :class:`_OrderByProxy` (when *entity_cls* is given) or a plain
+      :class:`EntityProxy`, and must return a
+      :class:`~nextorm.expr.ColumnExpr`, an
+      :class:`~nextorm.sql.nodes.OrderItem`, or a ``tuple`` of those.
+
+    Returns
+    -------
+    order_items:
+        Tuple of :class:`~nextorm.sql.nodes.OrderItem` objects.
+    joins:
+        List of ``(join_type, table_name, alias, on)`` tuples for any relation
+        traversals encountered in the lambda.  Empty when no lambda is used or
+        when all accesses are single-level.
+    """
+    from nextorm.expr import ColumnExpr  # noqa: PLC0415
+
+    def _coerce_one(item: Any) -> OrderItem:
+        if isinstance(item, OrderItem):
+            return item
+        if isinstance(item, ColumnExpr):
+            return OrderItem(item.ref)
+        raise TypeError(
+            f"order_by() expects OrderItem or ColumnExpr instances, got"
+            f" {type(item).__name__!r}."
+            " Use col.asc() / col.desc(), a bare column expression, or pass a lambda."
+        )
+
+    if len(items) == 1 and callable(items[0]):
+        accum = _OrderAccumulator()
+        proxy: Any = (
+            _OrderByProxy(entity_cls, accum) if entity_cls is not None else EntityProxy(table_name)
+        )
+        result = items[0](proxy)
+        if isinstance(result, tuple):
+            order = tuple(_coerce_one(r) for r in result)  # pyright: ignore[reportUnknownVariableType]
+        else:
+            order = (_coerce_one(result),)
+        return order, accum.joins
+
+    return tuple(_coerce_one(item) for item in items), []
 
 
 # ---------------------------------------------------------------------------
@@ -236,20 +479,30 @@ class QuerySet[ET: Entity]:
     # Chainable query modifiers (return a new QuerySet)
     # ------------------------------------------------------------------
 
-    def filter(self, *conditions: SqlNode) -> QuerySet[ET]:
+    def filter(self, *conditions: SqlNode, **kwargs: Any) -> QuerySet[ET]:
         """Narrow results with one or more WHERE conditions.
 
-        Multiple conditions are combined with ``AND``::
+        Multiple conditions are combined with ``AND``.  Keyword arguments are
+        treated as equality shortcuts (``field=value``):
 
             qs.filter(User.age >= 18, User.active == True)
+            # → WHERE age >= 18 AND active = 1
+
+            qs.filter(active=True)
+            # → WHERE active = 1
+
+            qs.filter(User.age >= 18, active=True)
             # → WHERE age >= 18 AND active = 1
         """
         q = self._clone()
         for cond in conditions:
             q._where = cond if q._where is None else BinOp(q._where, "AND", cond)
+        for field, value in kwargs.items():
+            kw_cond = BinOp(ColumnRef(field), "=", _Param(value=value))
+            q._where = kw_cond if q._where is None else BinOp(q._where, "AND", kw_cond)
         return q
 
-    def where(self, predicate: Callable[[Any], BinOp]) -> QuerySet[ET]:
+    def where(self, predicate: Callable[[Any], Any]) -> QuerySet[ET]:
         """Narrow results using a lambda predicate over a column proxy.
 
         The lambda receives an :class:`EntityProxy` whose attribute accesses
@@ -262,21 +515,74 @@ class QuerySet[ET: Entity]:
         Chain multiple ``.where()`` calls to combine conditions with AND::
 
             qs.where(lambda u: u.age >= 18).where(lambda u: u.active == True)
+
+        M2M containment and attribute boolean checks are also supported::
+
+            qs.where(lambda s: tag in s.tag_list)
+            qs.where(lambda pv: pv.active)
         """
+        # First try bytecode decompilation (supports M2M, bool attrs, method calls).
+        from nextorm.generators import DecompileError, _apply_predicate  # noqa: PLC0415
+
+        entity_cls = getattr(self._table, "entity_cls", None)
+        if entity_cls is not None:
+            try:
+                return _apply_predicate(self, predicate, entity_cls)  # type: ignore[no-any-return]
+            except DecompileError:
+                pass  # fall through to proxy-based approach
+
+        # Fallback: proxy-based evaluation for simple conditions.
         proxy = EntityProxy(self._table.name)
         cond = predicate(proxy)
         return self.filter(cond)
 
-    def order_by(self, *items: OrderItem) -> QuerySet[ET]:
+    @overload
+    def order_by(
+        self,
+        func: Callable[[Any], _ColumnExprT | OrderItem | tuple[_ColumnExprT | OrderItem, ...]],
+        /,
+    ) -> QuerySet[ET]: ...
+    @overload
+    def order_by(self, *items: OrderItem | _ColumnExprT) -> QuerySet[ET]: ...
+    def order_by(self, *items: Any) -> QuerySet[ET]:
         """Set the ``ORDER BY`` clause, replacing any previous ordering.
 
-        Use :meth:`~nextorm.expr.ColumnExpr.asc` / :meth:`~nextorm.expr.ColumnExpr.desc`
-        on a column expression to build order items::
+        Each call **replaces** any previous ordering.
+
+        Accepted forms:
+
+        *Using* ``.asc()`` / ``.desc()`` on a column expression (primary form)*::
 
             qs.order_by(User.name.asc(), User.age.desc())
+
+        *Bare column expression — auto-wrapped as ASC*::
+
+            qs.order_by(User.name)
+            qs.order_by(User.name, User.age.desc())  # mixed
+
+        *Lambda — receives an* :class:`EntityProxy` *whose attributes are*
+        :class:`~nextorm.expr.ColumnExpr` *objects*::
+
+            qs.order_by(lambda u: u.name)  # ASC (auto-wrapped)
+            qs.order_by(lambda u: u.name.desc())  # DESC
+            qs.order_by(lambda u: (u.age.desc(), u.name.asc()))  # multi-column
+
+        .. note::
+
+            The lambda receives an :class:`EntityProxy`, not the entity class.
+            Unlike :meth:`where`, which returns a boolean predicate, the
+            ``order_by`` lambda returns a column expression or ordering item.
         """
         q = self._clone()
-        q._order = tuple(items)
+        order, joins = _normalize_order_items(items, self._table.name, self._entity_class)
+        q._order = order
+        for join_spec in joins:
+            # Deduplicate: skip if same (join_type, table_name, alias) already present.
+            # Prevents ambiguous column errors when order_by traverses the same relation
+            # already joined by a where() clause.
+            jtype, jtable, jalias, jon = join_spec  # pyright: ignore[reportUnusedVariable]
+            if not any(j[0] == jtype and j[1] == jtable and j[2] == jalias for j in q._joins):
+                q._joins = (*q._joins, join_spec)
         return q
 
     def limit(self, n: int) -> QuerySet[ET]:
@@ -322,7 +628,11 @@ class QuerySet[ET: Entity]:
         else:
             table_name = table_or_entity._table_name_
         q = self._clone()
-        q._joins = (*q._joins, (join_type, table_name, alias, on))
+        # Deduplicate: skip if same (join_type, table_name, alias) already present.
+        # This prevents duplicate JOINs when the same relation is traversed in both
+        # WHERE and ORDER BY lambdas.
+        if not any(j[0] == join_type and j[1] == table_name and j[2] == alias for j in q._joins):
+            q._joins = (*q._joins, (join_type, table_name, alias, on))
         return q
 
     def prefetch(self, *relation_attrs: Any) -> QuerySet[ET]:
@@ -539,6 +849,10 @@ class QuerySet[ET: Entity]:
         """
         return self.count()
 
+    @overload
+    def __getitem__(self, index: int) -> ET: ...
+    @overload
+    def __getitem__(self, index: slice) -> list[ET]: ...
     def __getitem__(self, index: int | slice) -> ET | list[ET]:
         """Fetch a single item by integer index or a slice of items.
 
@@ -550,6 +864,13 @@ class QuerySet[ET: Entity]:
         Slice (start:stop, step not supported)::
 
             page = db.select(Product).order_by(Product.id)[10:20]
+
+        A bare slice ``[:]`` preserves any existing ``.offset()`` / ``.limit()``
+        set on the queryset — it does *not* reset them to zero.  This is useful
+        for executing an already-configured queryset::
+
+            query = Shop.select().order_by(Shop.updated_at.desc()).offset(1).limit(5)
+            results = query[:]  # equivalent to query.fetch_all()
 
         Negative indices and step values are not supported and raise
         :exc:`ValueError`.
@@ -568,7 +889,7 @@ class QuerySet[ET: Entity]:
                 raise ValueError("Step in slice is not supported")
             if start < 0 or (stop is not None and stop < 0):
                 raise ValueError("Negative indices are not supported")
-            qs = self.offset(start)
+            qs = self if start == 0 else self.offset(start)
             if stop is not None:
                 qs = qs.limit(stop - start)
             return qs.fetch_all()
@@ -802,9 +1123,21 @@ class QuerySet[ET: Entity]:
             lim = extra_limit if self._lim is None else min(self._lim, extra_limit)
         # Use explicit column list when the entity has lazy fields so that
         # the lazy column data is not transferred from the database at all.
-        columns: tuple[Any, ...] = (
-            self._explicit_columns if self._explicit_columns is not None else (Star(),)
-        )
+        # When JOINs are present, qualify each column ref with the main table name to
+        # avoid "ambiguous column name" errors (multiple joined tables may share 'id').
+        if self._explicit_columns is not None:
+            if self._joins:
+                tname = self._table.name
+                columns: tuple[Any, ...] = tuple(
+                    ColumnRef(c.column, tname) if isinstance(c, ColumnRef) and c.table is None else c  # pyright: ignore[reportUnnecessaryIsInstance]
+                    for c in self._explicit_columns
+                )
+            else:
+                columns = self._explicit_columns
+        elif self._joins:
+            columns = (Star(self._table.name),)
+        else:
+            columns = (Star(),)
         return Select(
             columns=columns,
             from_table=self._table.name,
@@ -871,14 +1204,26 @@ class QuerySet[ET: Entity]:
 
         obj: ET = object.__new__(entity_cls)
         vars(obj)["_db_"] = self._db
+        # Intermediate storage for composite FK components keyed by fk_key.
+        _cfk_builders: dict[str, list[Any]] = {}
         for field_name, value in zip(self._column_map, row, strict=False):
             if field_name is None:  # pragma: no cover
                 continue
-            if field_name.startswith("_") and field_name.endswith("_id"):
+            if "\x1f" in field_name:
+                # Composite FK component: "_shop_order_id\x1f0\x1f2"
+                fk_key, idx_str, total_str = field_name.split("\x1f")
+                idx, total = int(idx_str), int(total_str)
+                if fk_key not in _cfk_builders:
+                    _cfk_builders[fk_key] = [None] * total
+                _cfk_builders[fk_key][idx] = value
+            elif field_name.startswith("_") and field_name.endswith("_id"):
                 # FK id — store directly in __dict__, bypassing descriptors
                 vars(obj)[field_name] = value
             else:
                 setattr(obj, field_name, value)
+        # Assemble composite FK tuples
+        for fk_key, components in _cfk_builders.items():
+            vars(obj)[fk_key] = tuple(components) if any(c is not None for c in components) else None
         # Stamp lazy sentinel for any lazy fields not returned in this row
         for lname in self._lazy_field_names:
             vars(obj)[f"_field_{lname}"] = _LAZY_SENTINEL
@@ -900,9 +1245,23 @@ class QuerySet[ET: Entity]:
                 if not fi.spec.primary_key and not fi.spec.volatile and not fi.spec.lazy:
                     col = fi.spec.column or fi.name
                     dbvals[col] = getattr(obj, fi.name, None)
+            table_col_names = self._table.column_names()
             for ri in entity_cls._relations_.values():
                 if ri.spec.kind == RelationKind.SINGLE:
-                    dbvals[ri.spec.column or f"{ri.name}_id"] = vars(obj).get(f"_{ri.name}_id")
+                    fk_val = vars(obj).get(f"_{ri.name}_id")
+                    if isinstance(fk_val, tuple):
+                        from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+
+                        fk_col_names = _derive_composite_fk_cols(ri.name, ri.spec.target)
+                        _fk_tuple = cast("tuple[Any, ...]", fk_val)  # type: ignore[redundant-cast]
+                        for col_name, val in zip(fk_col_names, _fk_tuple, strict=False):
+                            if col_name in table_col_names:  # pragma: no branch
+                                dbvals[col_name] = val
+                    else:
+                        fk_col = ri.spec.column or f"{ri.name}_id"
+                        if fk_col not in table_col_names:
+                            continue
+                        dbvals[fk_col] = fk_val
             vars(obj)["_dbvals_"] = dbvals
             vars(obj)["_read_cols_"] = set()
 

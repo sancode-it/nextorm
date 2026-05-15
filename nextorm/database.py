@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import nextorm.providers  # noqa: F401  # pyright: ignore[reportUnusedImport]
 from nextorm.debug import QueryStat, _global_stats_lock, _print_sql, global_stats
-from nextorm.entity import Entity, EntityMeta, _entity_registry
+from nextorm.entity import Entity, EntityMeta, _entity_registry, _LazyType
 from nextorm.exceptions import MappingError, OptimisticCheckError
 from nextorm.fields import (
     OptAttrValue,
@@ -418,7 +418,10 @@ class Database:
             entity_db = vars(entity).get("_db_")
             # Save if this is the right DB, or if the entity has no DB yet
             # (unmapped entity — _require_mapped will raise the appropriate error).
-            if entity_db is None or entity_db is self:
+            # Skip entities already persisted by an earlier auto-flush.
+            # _dbvals_ is set by _do_insert/_do_update; if present the entity
+            # is already in the DB and should not be INSERTed again.
+            if (entity_db is None or entity_db is self) and "_dbvals_" not in vars(entity):
                 self.save(entity)
         for entity in list(cache.dirty_objects):
             entity_db = vars(entity).get("_db_")
@@ -478,6 +481,157 @@ class Database:
                 self._sync_provider_instance.execute_ddl(conn, self._ddl_statements)
             finally:
                 self._release_connection(conn)
+
+    def create_tables(self) -> None:
+        """Create tables for all entities if they don't already exist.
+
+        This method checks the existing database schema and creates only the
+        tables that are missing. It's useful when you need to create tables
+        after they were deleted.
+
+        Raises :exc:`RuntimeError` if the database is not bound or mapped.
+
+        Example::
+
+            db.bind("sqlite", ":memory:")
+            db.generate_mapping()
+            db.create_tables()  # creates all tables
+        """
+        if not self._schema:
+            raise RuntimeError("Database is not mapped. Call generate_mapping() first.")
+        assert self._renderer is not None
+        assert self._sync_provider_instance is not None
+
+        conn = self._ensure_connection()
+        try:
+            # Build CREATE TABLE statements for all tables
+            statements = [self._renderer.create_table(table) for table in self._schema.values()]
+            self._sync_provider_instance.execute_ddl(conn, statements)
+        finally:
+            self._release_connection(conn)
+
+    def drop_table(
+        self, table_name: str, *, if_exists: bool = False, with_all_data: bool = False
+    ) -> None:
+        """Drop a specific table from the database.
+
+        Parameters
+        ----------
+        table_name:
+            Name of the table to drop (case-sensitive).
+        if_exists:
+            When ``True``, do not raise an error if the table doesn't exist.
+        with_all_data:
+            When ``False``, raises an error if the table contains data.
+            When ``True``, drops the table regardless of content.
+
+        Raises :exc:`RuntimeError` if the table contains data and ``with_all_data``
+        is ``False``.
+
+        Example::
+
+            db.drop_table("users", if_exists=True)
+            db.drop_table("users", if_exists=True, with_all_data=True)
+        """
+        if not self._bound:
+            raise RuntimeError("Database is not bound. Call bind() first.")
+        assert self._renderer is not None
+        assert self._sync_provider_instance is not None
+
+        conn = self._ensure_connection()
+        try:
+            # Check for data if with_all_data is False
+            if not with_all_data:
+                try:
+                    # Build proper SQL with quoting if needed
+                    select_stmt = f"SELECT 1 FROM {table_name} LIMIT 1"
+                    cursor = conn.cursor()
+                    try:
+                        cursor.execute(select_stmt)
+                        row = cursor.fetchone()
+                        if row is not None:
+                            raise RuntimeError(
+                                f"Table {table_name} is not empty. "
+                                f"Set with_all_data=True to drop table with data."
+                            )
+                    finally:
+                        cursor.close()
+                except RuntimeError:
+                    raise
+                except Exception:
+                    # If table doesn't exist and if_exists=True, we can proceed
+                    # If table doesn't exist and if_exists=False, drop will fail anyway
+                    pass
+
+            if if_exists:
+                statement = self._renderer.drop_table(table_name)
+            else:
+                statement = f"DROP TABLE {table_name}"
+            self._sync_provider_instance.execute_ddl(conn, [statement])
+        finally:
+            self._release_connection(conn)
+
+    def drop_all_tables(self, *, with_all_data: bool = False) -> None:
+        """Drop all tables associated with this database.
+
+        Parameters
+        ----------
+        with_all_data:
+            When ``False``, raises an error if any table contains data.
+            When ``True``, drops all tables regardless of content.
+
+        Raises :exc:`RuntimeError` if a table contains data and ``with_all_data``
+        is ``False``.
+
+        Example::
+
+            db.drop_all_tables(with_all_data=True)  # useful for test cleanup
+        """
+        if not self._schema:
+            raise RuntimeError("Database is not mapped. Call generate_mapping() first.")
+        assert self._renderer is not None
+        assert self._sync_provider_instance is not None
+
+        conn = self._ensure_connection()
+        try:
+            # Check for data in tables if with_all_data is False
+            if not with_all_data:
+                cursor = conn.cursor()
+                try:
+                    for table_name in self._schema:
+                        cursor.execute(f"SELECT 1 FROM {table_name} LIMIT 1")
+                        if cursor.fetchone():
+                            raise RuntimeError(
+                                f"Table {table_name} is not empty. "
+                                f"Set with_all_data=True to drop tables with data."
+                            )
+                finally:
+                    cursor.close()
+
+            # Drop all tables (in reverse order to handle FK constraints)
+            statements = [
+                self._renderer.drop_table(table_name)
+                for table_name in reversed(list(self._schema.keys()))
+            ]
+            self._sync_provider_instance.execute_ddl(conn, statements)
+        finally:
+            self._release_connection(conn)
+
+    def disconnect(self) -> None:
+        """Close the database connection for the current thread.
+
+        This is useful when you need to clean up resources, especially before
+        deleting a SQLite database file. The connection will be reopened on
+        the next database operation.
+
+        Example::
+
+            db.disconnect()  # close connection
+            # safe to delete SQLite file now
+        """
+        if self._pool is not None:
+            self._pool.close_all()
+            self._pool = None
 
     @property
     def schema(self) -> dict[str, Table]:
@@ -569,15 +723,47 @@ class Database:
         table = self._schema[entity_cls._table_name_]
         pk_val = _get_pk_val(entity)
 
-        # For composite PKs the user supplies all PK values before the first save.
-        # Use _dbvals_ presence to distinguish new (not-yet-inserted) from existing.
-        # We cannot use _db_ because Entity.__init__ sets _db_ immediately when
-        # created inside a db_session (before the first actual DB write).
-        is_new = pk_val is None or (entity_cls._pk_field_ is None and "_dbvals_" not in vars(entity))
+        # For composite PKs or user-supplied single PKs, use _dbvals_ presence to
+        # distinguish new (not-yet-inserted) from existing.  We cannot use _db_
+        # because Entity.__init__ sets _db_ immediately when created inside a
+        # db_session (before the first actual DB write).
+        # Even for auto-increment PKs, if the user manually set the PK, we need to
+        # check _dbvals_ to know whether to INSERT or UPDATE.
+        is_new = pk_val is None
+        if not is_new:
+            # Check _dbvals_ to distinguish new from existing for all cases:
+            # - Composite PKs (user supplies all values)
+            # - Single non-auto PKs (user supplies the value)
+            # - Single auto PKs with user-set values (also need to INSERT, not UPDATE)
+            if entity_cls._pk_field_ is None:
+                # Composite PK: check _dbvals_ to know if this is a new entity
+                is_new = "_dbvals_" not in vars(entity)
+            else:
+                # Single-field PK: check _dbvals_ for both auto and non-auto PKs
+                # because user might manually set an auto PK
+                is_new = "_dbvals_" not in vars(entity)
+        # Track in-progress saves so auto-flush inside before_insert/before_update
+        # lifecycle hooks won't attempt to re-save the same entity (which is still
+        # in _to_save because unschedule_save hasn't been called yet).
+        saving_set: set[int] = getattr(self, "_saving_", None) or set()
+        if not saving_set:
+            self._saving_: set[int] = saving_set
+        entity_id = id(entity)
+        if entity_id in saving_set:
+            return  # already being saved — avoid re-entrant double-insert
+        saving_set.add(entity_id)
         try:
             if is_new:
                 entity.before_insert()
-                self._do_insert(entity, entity_cls, table)
+                # If user manually set an auto PK, include it in the INSERT statement
+                include_auto_pk = pk_val is not None and entity_cls._pk_field_ is not None
+                pk_field = (
+                    entity_cls._fields_.get(entity_cls._pk_field_)
+                    if entity_cls._pk_field_ is not None
+                    else None
+                )
+                include_auto_pk = include_auto_pk and (pk_field is not None and pk_field.spec.auto)
+                self._do_insert(entity, entity_cls, table, include_auto_pk=include_auto_pk)
                 entity.after_insert()
             else:
                 entity.before_update()
@@ -592,6 +778,8 @@ class Database:
                 cache.unmark_dirty(entity)
                 cache.unschedule_save(entity)
             raise
+        finally:
+            saving_set.discard(entity_id)
 
         self._post_save(entity, pk_val if pk_val is not None else _get_pk_val(entity))
 
@@ -658,6 +846,134 @@ class Database:
         )
         assert self._builder is not None
         sql, params = self._builder.render(stmt)
+
+        # ------------------------------------------------------------------
+        # Cascade: process Set relations before the main DELETE.
+        # ------------------------------------------------------------------
+        from nextorm.entity import _matches_entity, _resolve_entity_target  # noqa: PLC0415
+        from nextorm.fields import RelationKind  # noqa: PLC0415
+
+        owner_table = entity_cls._table_name_
+
+        for ri in entity_cls._relations_.values():
+            if ri.spec.kind == RelationKind.SINGLE:
+                # Handle non-owning Single back-refs with cascade_delete=True.
+                # These are cases where the FK lives on the TARGET table (not ours),
+                # e.g. User.cart where Cart has user: PK[User].
+                if not ri.spec.cascade_delete:
+                    continue
+                target_cls = _resolve_entity_target(ri.spec.target)
+                if target_cls is None:  # pragma: no cover — target always resolvable post-mapping
+                    continue
+                # Check if FK column is on our table or the target's table
+                fk_col = ri.spec.column or f"{ri.name}_id"
+                our_table = self._schema.get(entity_cls._table_name_)
+                if our_table is not None and fk_col in our_table.column_names():
+                    # Owning side: FK is on us → target entity persists (no cascade needed)
+                    continue
+                # Non-owning side: FK is on target → find and delete the related entity
+                # Use the reverse relation to find the FK column on the target
+                reverse_name = getattr(ri.spec, "reverse", None)
+                if reverse_name is not None:
+                    rev_ri = target_cls._relations_.get(reverse_name)
+                    if rev_ri is not None and rev_ri.spec.kind == RelationKind.SINGLE:
+                        rev_fk_col = rev_ri.spec.column or f"{reverse_name}_id"
+                        # Find related entity on target where rev_fk_col = our pk
+                        cond = BinOp(ColumnRef(rev_fk_col), "=", Param(value=pk_val))
+                        related = self.select(target_cls).filter(cond).fetch_one()  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+                        if related is not None:
+                            self.delete_instance(related)  # pyright: ignore[reportUnknownArgumentType]
+                continue
+            if ri.spec.kind != RelationKind.SET:  # pragma: no cover — only SINGLE and SET exist
+                continue
+            target_cls = _resolve_entity_target(ri.spec.target)
+            if target_cls is None:
+                continue  # pragma: no cover — unresolvable at delete time
+            # Skip target entities not mapped to this database.
+            if target_cls._table_name_ not in self._schema:
+                continue
+
+            # Determine if M2M (both sides have Set pointing at each other).
+            # Use the explicit reverse attribute when present to avoid false positives
+            # when the target has multiple Set relations pointing at the owner entity.
+            is_m2m = False
+            reverse_name = getattr(ri.spec, "reverse", None)
+            if reverse_name is not None:
+                back_ri = target_cls._relations_.get(reverse_name)
+                if back_ri is not None:
+                    is_m2m = back_ri.spec.kind == RelationKind.SET
+            else:
+                is_m2m = any(
+                    r.spec.kind == RelationKind.SET and _matches_entity(r.spec.target, entity_cls)
+                    for r in target_cls._relations_.values()
+                )
+
+            if is_m2m:
+                # M2M: delete join-table rows that link this owner
+                join_table_name = ri.spec.table or "_".join(
+                    sorted([owner_table, target_cls._table_name_])
+                )
+                jt_owner_col = f"{owner_table}_id"
+                del_jt = Delete(
+                    table=join_table_name,
+                    where=BinOp(ColumnRef(jt_owner_col), "=", Param(value=pk_val)),
+                )
+                jt_sql, jt_params = self._builder.render(del_jt)
+                self._execute_dml(jt_sql, jt_params)
+            else:
+                # O2M: find the Single back-ref on target pointing at us
+                back_ref = next(
+                    (
+                        r
+                        for r in target_cls._relations_.values()
+                        if r.spec.kind == RelationKind.SINGLE
+                        and _matches_entity(r.spec.target, entity_cls)
+                    ),
+                    None,
+                )
+                if back_ref is None:
+                    continue  # pragma: no cover — no back-ref, skip
+
+                # Determine cascade policy
+                should_cascade = back_ref.spec.cascade_delete
+                if should_cascade is None:
+                    should_cascade = not back_ref.spec.nullable
+
+                fk_col = back_ref.spec.column or f"{back_ref.name}_id"
+
+                if should_cascade:
+                    # Cascade delete: find and delete all children.
+                    # Build the WHERE condition, handling composite PK owners.
+                    from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+
+                    if isinstance(pk_val, tuple):
+                        fk_col_names = _derive_composite_fk_cols(back_ref.name, entity_cls)
+                        if len(fk_col_names) == len(pk_val):  # pyright: ignore[reportUnknownArgumentType]
+                            cascade_cond: BinOp = BinOp(
+                                ColumnRef(fk_col_names[0]), "=", Param(value=pk_val[0])
+                            )
+                            for _col, _pv in zip(fk_col_names[1:], pk_val[1:], strict=False):  # pyright: ignore[reportUnknownArgumentType, reportUnknownVariableType]
+                                cascade_cond = BinOp(
+                                    cascade_cond,
+                                    "AND",
+                                    BinOp(ColumnRef(_col), "=", Param(value=_pv)),  # pyright: ignore[reportUnknownArgumentType]
+                                )
+                        else:  # pragma: no cover — fk_col_names/pk_val mismatch; defensive fallback
+                            cascade_cond = BinOp(ColumnRef(fk_col), "=", Param(value=pk_val))
+                    else:
+                        cascade_cond = BinOp(ColumnRef(fk_col), "=", Param(value=pk_val))  # pyright: ignore[reportUnknownArgumentType]
+                    for child in self.select(target_cls).filter(cascade_cond).fetch_all():  # type: ignore[arg-type, var-annotated]
+                        self.delete_instance(child)  # pyright: ignore[reportUnknownArgumentType]
+                else:
+                    # Nullable FK: set to NULL
+                    upd_null = Update(
+                        table=target_cls._table_name_,
+                        assignments=((fk_col, Literal("NULL")),),
+                        where=BinOp(ColumnRef(fk_col), "=", Param(value=pk_val)),
+                    )
+                    upd_sql, upd_params = self._builder.render(upd_null)
+                    self._execute_dml(upd_sql, upd_params)
+
         entity.before_delete()
         self._execute_dml(sql, params)
         # Clear all PK fields
@@ -699,12 +1015,14 @@ class Database:
         *args* are passed as positional parameters to the DBAPI cursor (i.e.
         bound as ``?`` or ``%s`` placeholders depending on the provider).
 
-        This is useful for DDL statements or DML that cannot be expressed via
-        the QuerySet API::
+        Pending entity inserts and updates in the current
+        :func:`~nextorm.session.db_session` are flushed before the statement
+        is executed, so that the SQL operates on up-to-date data::
 
             db.execute("CREATE INDEX idx_user_email ON user (email)")
             db.execute("DELETE FROM session WHERE expires_at < ?", cutoff)
         """
+        self.flush()
         return self._execute_dml(sql, list(args))
 
     def select_raw(self, sql: str, *args: Any) -> list[dict[str, Any]]:
@@ -735,7 +1053,40 @@ class Database:
             self._release_connection(conn)
 
     def _execute(self, sql: str, params: list[Any]) -> list[tuple[Any, ...]]:
-        """Execute *sql* with *params* and return all rows."""
+        """Execute *sql* with *params* and return all rows.
+
+        Auto-flushes pending INSERT/UPDATE entities before executing a SELECT,
+        mirroring PonyORM's flush-before-read semantics.  A ``_flushing_``
+        guard prevents recursive auto-flush when ``before_insert`` or similar
+        hooks trigger nested SELECTs (e.g. slug-uniqueness checks).
+        """
+        if not getattr(self, "_flushing_", False):
+            from nextorm.session import _get_session_stack  # noqa: PLC0415
+
+            cache = _get_session_stack().current
+            if cache is not None and (cache.objects_to_save or cache.dirty_objects):
+                saving_set: set[int] = getattr(self, "_saving_", None) or set()
+                pending = [
+                    e
+                    for e in cache.objects_to_save
+                    if vars(e).get("_db_") is self
+                    and "_dbvals_" not in vars(e)
+                    and id(e) not in saving_set
+                ]
+                dirty = [
+                    e
+                    for e in cache.dirty_objects
+                    if vars(e).get("_db_") is self and id(e) not in saving_set
+                ]
+                if pending or dirty:
+                    self._flushing_: bool = True
+                    try:
+                        for entity in pending:
+                            self.save(entity)
+                        for entity in dirty:
+                            self.save(entity)
+                    finally:
+                        self._flushing_ = False
         self._last_sql = sql
         _print_sql(sql, params)
         conn = self._ensure_connection()
@@ -919,12 +1270,38 @@ class Database:
             if val is None and issubclass(fi.py_type, str) and not fi.spec.nullable:
                 val = ""
             cols_and_vals.append((fi.spec.column or fi.name, _serialize_value(val)))
-        # Also persist FK values from Single relations (owning side)
+        # Also persist FK values from Single relations (owning side).
+        # Skip FK columns that don't exist in the table (non-owning side of O2O back-refs).
+        table_col_names = table.column_names()
         for ri in entity_cls._relations_.values():
             if ri.spec.kind == RelationKind.SINGLE:
-                fk_col = ri.spec.column or f"{ri.name}_id"
+                # First check for explicit FK value set via _<name>_id
                 fk_val = entity.__dict__.get(f"_{ri.name}_id")
-                cols_and_vals.append((fk_col, fk_val))
+                # If not found, try to extract from the related entity
+                if fk_val is None:
+                    related_entity = entity.__dict__.get(f"_{ri.name}_obj")
+                    if related_entity is not None and isinstance(related_entity, Entity):
+                        fk_val = _get_pk_val(related_entity)
+                if isinstance(fk_val, tuple):
+                    # Composite PK FK — expand to multiple column entries
+                    from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+
+                    fk_col_names = ri.spec.columns or _derive_composite_fk_cols(
+                        ri.name, ri.spec.target
+                    )
+                    _fk_tuple = cast("tuple[Any, ...]", fk_val)  # type: ignore[redundant-cast]
+                    for col_name, val in zip(fk_col_names, _fk_tuple, strict=False):
+                        if col_name in table_col_names:  # pragma: no branch
+                            cols_and_vals.append((col_name, val))
+                else:
+                    fk_col = (
+                        (ri.spec.columns[0] if ri.spec.columns else None)
+                        or ri.spec.column
+                        or f"{ri.name}_id"
+                    )
+                    if fk_col not in table_col_names:
+                        continue
+                    cols_and_vals.append((fk_col, fk_val))
         # STI: inject the discriminator column value for child entities
         disc_val = entity_cls._discriminator_val_
         if disc_val is not None and entity_cls._sti_parent_ is not None:
@@ -968,10 +1345,42 @@ class Database:
                 dbvals[col] = getattr(entity, fi.name, None)
         for ri in entity_cls._relations_.values():
             if ri.spec.kind == RelationKind.SINGLE:
-                dbvals[ri.spec.column or f"{ri.name}_id"] = vars(entity).get(f"_{ri.name}_id")
+                fk_val = vars(entity).get(f"_{ri.name}_id")
+                if isinstance(fk_val, tuple):
+                    from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+
+                    fk_col_names = ri.spec.columns or _derive_composite_fk_cols(
+                        ri.name, ri.spec.target
+                    )
+                    _fk_tuple = cast("tuple[Any, ...]", fk_val)  # type: ignore[redundant-cast]
+                    for col_name, val in zip(fk_col_names, _fk_tuple, strict=False):
+                        if col_name in table_col_names:  # pragma: no branch
+                            dbvals[col_name] = val
+                else:
+                    fk_col = (
+                        (ri.spec.columns[0] if ri.spec.columns else None)
+                        or ri.spec.column
+                        or f"{ri.name}_id"
+                    )
+                    if fk_col not in table_col_names:
+                        continue
+                    dbvals[fk_col] = fk_val
         vars(entity)["_dbvals_"] = dbvals
         if "_read_cols_" not in vars(entity):
             vars(entity)["_read_cols_"] = set()
+        # Persist any M2M Set relations that were assigned as lists during construction.
+        for ri in entity_cls._relations_.values():
+            if ri.spec.kind == RelationKind.SET:
+                cache_key = f"_{ri.name}_col"
+                pending = vars(entity).get(cache_key)
+                if isinstance(pending, list) and pending:
+                    # Remove the list so the descriptor creates a fresh RelatedCollection
+                    del vars(entity)[cache_key]
+                    # Flush any new (unsaved) items so they have PKs before join-table insert.
+                    for item in pending:  # pyright: ignore[reportUnknownVariableType]
+                        if "_dbvals_" not in vars(item):  # pyright: ignore[reportUnknownArgumentType]
+                            self.save(item)  # pyright: ignore[reportUnknownArgumentType]
+                    getattr(entity, ri.name).add(*pending)
 
     def _do_update(
         self,
@@ -997,13 +1406,39 @@ class Database:
             if not fi.spec.primary_key and not fi.spec.volatile and fi.name not in scalar_pk_names
         ]
         # Also update FK values from Single relations (owning side),
-        # but skip relation fields that are part of the composite PK (they are identity)
+        # but skip relation fields that are part of the composite PK (they are identity).
+        # Also skip FK columns that don't exist in the table (non-owning side of O2O back-refs).
         pk_rel_names = {f for f in entity_cls._pk_fields_ if f not in entity_cls._fields_}
+        table_col_names = table.column_names()
         for ri in entity_cls._relations_.values():
             if ri.spec.kind == RelationKind.SINGLE and ri.name not in pk_rel_names:
-                fk_col = ri.spec.column or f"{ri.name}_id"
+                # First check for explicit FK value set via _<name>_id
                 fk_val = entity.__dict__.get(f"_{ri.name}_id")
-                assignments.append((fk_col, Param(value=fk_val)))
+                # If not found, try to extract from the related entity
+                if fk_val is None:
+                    related_entity = entity.__dict__.get(f"_{ri.name}_obj")
+                    if related_entity is not None and isinstance(related_entity, Entity):
+                        fk_val = _get_pk_val(related_entity)
+                if isinstance(fk_val, tuple):
+                    # Composite PK FK — expand to multiple column entries
+                    from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+
+                    fk_col_names = ri.spec.columns or _derive_composite_fk_cols(
+                        ri.name, ri.spec.target
+                    )
+                    _fk_tuple = cast("tuple[Any, ...]", fk_val)  # type: ignore[redundant-cast]
+                    for col_name, val in zip(fk_col_names, _fk_tuple, strict=False):
+                        if col_name in table_col_names:  # pragma: no branch
+                            assignments.append((col_name, Param(value=val)))
+                else:
+                    fk_col = (
+                        (ri.spec.columns[0] if ri.spec.columns else None)
+                        or ri.spec.column
+                        or f"{ri.name}_id"
+                    )
+                    if fk_col not in table_col_names:
+                        continue
+                    assignments.append((fk_col, Param(value=fk_val)))
         # Option A — per-field optimistic concurrency check.
         # Only columns the caller actually READ (via descriptor __get__) and that
         # exist in _dbvals_ are checked; PK and untracked columns are silently skipped.
@@ -1038,6 +1473,39 @@ class Database:
                 f"Concurrent update detected for {entity_cls.__name__!r} "
                 f"pk={pk_val!r}: row was modified by another transaction."
             )
+        # Refresh _dbvals_ with post-update values so subsequent flushes within
+        # the same session use correct optimistic-check baseline values.
+        new_dbvals: dict[str, Any] = vars(entity).get("_dbvals_") or {}
+        for fi in entity_cls._relations_.values():
+            if fi.spec.kind == RelationKind.SINGLE:
+                fk_col = (
+                    (fi.spec.columns[0] if fi.spec.columns else None)
+                    or fi.spec.column
+                    or f"{fi.name}_id"
+                )
+                new_dbvals[fk_col] = vars(entity).get(f"_{fi.name}_id")
+        for fi_field in entity_cls._fields_.values():
+            if not fi_field.spec.primary_key and not fi_field.spec.volatile:
+                col = fi_field.spec.column or fi_field.name
+                new_dbvals[col] = getattr(entity, fi_field.name, None)
+        vars(entity)["_dbvals_"] = new_dbvals
+        # Clear read-set so the next flush uses a fresh optimistic baseline.
+        vars(entity)["_read_cols_"] = set()
+        # Persist any M2M Set relations that were assigned as lists (e.g. via set()).
+        for ri in entity_cls._relations_.values():
+            if ri.spec.kind == RelationKind.SET:
+                cache_key = f"_{ri.name}_col"
+                pending = vars(entity).get(cache_key)
+                if isinstance(pending, list):
+                    del vars(entity)[cache_key]
+                    col = getattr(entity, ri.name)
+                    col.clear()
+                    if pending:
+                        # Flush any new (unsaved) items so they have PKs before join-table insert.
+                        for item in pending:  # pyright: ignore[reportUnknownVariableType]
+                            if "_dbvals_" not in vars(item):  # pyright: ignore[reportUnknownArgumentType]
+                                self.save(item)  # pyright: ignore[reportUnknownArgumentType]
+                        col.add(*pending)
 
     # ------------------------------------------------------------------
     # Guard
@@ -1068,12 +1536,14 @@ class Database:
         entities = self._effective_entities()
         entity_by_name: dict[str, EntityMeta] = {e.__name__.lower(): e for e in entities}
 
-        def _resolve(target: type[Entity] | str | typing.ForwardRef | None) -> EntityMeta | None:
+        def _resolve(
+            target: type[Entity] | str | typing.ForwardRef | _LazyType | None,
+        ) -> EntityMeta | None:
             if target is None:  # pragma: no cover
                 return None
             if isinstance(target, str):  # pragma: no cover
                 return entity_by_name.get(target.lower())
-            if isinstance(target, typing.ForwardRef):
+            if isinstance(target, (typing.ForwardRef, _LazyType)):
                 return entity_by_name.get(target.__forward_arg__.lower())
             return cast("EntityMeta", target)
 

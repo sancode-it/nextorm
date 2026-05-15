@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import typing
 from typing import Any
@@ -14,6 +15,7 @@ from nextorm.debug import QueryStat, global_stats
 from nextorm.entity import Entity
 from nextorm.exceptions import MappingError, MultipleObjectsFoundError, ObjectNotFound
 from nextorm.fields import PK, Opt, Req, Set, Single
+from nextorm.session import db_session
 from nextorm.sql.nodes import BinOp, ColumnRef, Param
 
 # ---------------------------------------------------------------------------
@@ -335,6 +337,42 @@ async def test_async_order_by() -> None:
             .fetch_all()
         )
         assert [r.name for r in rows] == ["A", "B", "C"]
+
+
+@pytest.mark.asyncio
+async def test_async_order_by_lambda() -> None:
+    async with AsyncDatabase(entities=[AsyncUser]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+
+        await db.asave(AsyncUser(name="C", age=3))
+        await db.asave(AsyncUser(name="A", age=1))
+        await db.asave(AsyncUser(name="B", age=2))
+
+        rows = await db.aselect(AsyncUser).order_by(lambda u: u.name).fetch_all()
+        assert [r.name for r in rows] == ["A", "B", "C"]
+
+        rows_desc = await db.aselect(AsyncUser).order_by(lambda u: u.age.desc()).fetch_all()
+        assert [r.age for r in rows_desc] == [3, 2, 1]
+
+
+@pytest.mark.asyncio
+async def test_async_order_by_lambda_chained_relation() -> None:
+    """AsyncQuerySet.order_by with a chained relation adds the required JOIN."""
+    async with AsyncDatabase(entities=[AsyncUser, AsyncPostA]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+
+        user_a = AsyncUser(name="Alice", age=1)
+        user_b = AsyncUser(name="Bob", age=2)
+        await db.asave(user_a)
+        await db.asave(user_b)
+        await db.asave(AsyncPostA(title="Post-Z", author=user_b))
+        await db.asave(AsyncPostA(title="Post-A", author=user_a))
+
+        rows = await db.aselect(AsyncPostA).order_by(lambda p: p.author.name).fetch_all()
+        # Ordering by author.name ASC: Alice's post (Post-A) comes before Bob's (Post-Z)
+        assert [r.title for r in rows] == ["Post-A", "Post-Z"]
 
 
 @pytest.mark.asyncio
@@ -1099,17 +1137,66 @@ async def test_async_where_chainable() -> None:
         assert results[0].name == "old"
 
 
-async def test_async_execute_runs_dml() -> None:
+async def test_async_filter_kwargs_equality() -> None:
+    """AsyncQuerySet.filter(field=value) applies keyword equality shortcuts."""
     async with AsyncDatabase(entities=[AsyncUser]) as db:
         await db.bind("sqlite", ":memory:")
         await db.generate_mapping(create_tables=True)
-        await db.asave(AsyncUser(name="to-delete", age=1))
-        affected = await db.execute("DELETE FROM asyncuser WHERE name = ?", "to-delete")
-        assert affected == 1
-        assert await db.aselect(AsyncUser).count() == 0
+        await db.asave(AsyncUser(name="alice", age=30))
+        await db.asave(AsyncUser(name="bob", age=25))
+        results = await db.aselect(AsyncUser).filter(name="alice").fetch_all()
+        assert len(results) == 1
+        assert results[0].name == "alice"
 
 
-async def test_async_select_raw_returns_dicts() -> None:
+async def test_async_filter_kwargs_mixed_with_conditions() -> None:
+    """AsyncQuerySet.filter() accepts both SqlNode conditions and **kwargs."""
+    async with AsyncDatabase(entities=[AsyncUser]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        await db.asave(AsyncUser(name="alice", age=30))
+        await db.asave(AsyncUser(name="bob", age=20))
+        await db.asave(AsyncUser(name="carol", age=30))
+        results = await db.aselect(AsyncUser).filter(AsyncUser.age == 30, name="alice").fetch_all()
+        assert len(results) == 1
+        assert results[0].name == "alice"
+
+
+async def test_async_where_uses_decompilation() -> None:
+    """AsyncQuerySet.where() uses bytecode decompilation for M2M/bool patterns."""
+    async with AsyncDatabase(entities=[AsyncUser]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        await db.asave(AsyncUser(name="alice", age=30))
+        await db.asave(AsyncUser(name="bob", age=20))
+        # Decompilation path: generator-style predicate
+        results = await db.aselect(AsyncUser).where(lambda u: u.name == "alice").fetch_all()  # pyright: ignore[reportUnknownLambdaType, reportUnknownMemberType]
+        assert len(results) == 1
+        assert results[0].name == "alice"
+
+
+async def test_async_where_falls_back_to_proxy_on_decompile_error() -> None:
+    """AsyncQuerySet.where() falls back to proxy evaluation when decompilation fails."""
+    from unittest.mock import patch
+
+    from nextorm.generators import DecompileError
+
+    async with AsyncDatabase(entities=[AsyncUser]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        await db.asave(AsyncUser(name="alice", age=30))
+        await db.asave(AsyncUser(name="bob", age=20))
+
+        def _raise(*args: object, **kwargs: object) -> object:
+            raise DecompileError("forced")
+
+        with patch("nextorm.generators._apply_predicate", side_effect=_raise):
+            results = await db.aselect(AsyncUser).where(lambda u: u.age > 25).fetch_all()  # pyright: ignore[reportUnknownLambdaType, reportUnknownMemberType]
+        assert len(results) == 1
+        assert results[0].name == "alice"
+
+
+async def test_async_execute_runs_dml() -> None:
     async with AsyncDatabase(entities=[AsyncUser]) as db:
         await db.bind("sqlite", ":memory:")
         await db.generate_mapping(create_tables=True)
@@ -1848,3 +1935,1221 @@ async def test_async_validate_relations_with_string_target() -> None:
 
     # String targets should resolve via entity_by_name
     await db.generate_mapping(validate_relations=True)
+
+
+# ---------------------------------------------------------------------------
+# AsyncDatabase.create_tables / drop_table / drop_all_tables
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_create_tables_after_generate_mapping() -> None:
+    """AsyncDatabase.create_tables() creates tables after generate_mapping(create_tables=False)."""
+
+    class ACtItem(Entity):
+        _table_ = "a_ct_item"
+        name: Req[str]
+
+    db = AsyncDatabase(entities=[ACtItem])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=False, validate_relations=False)
+
+    await db.create_tables()
+
+    # Verify tables are usable
+    await db.ainsert(ACtItem(name="test"))
+    items = await db.aselect(ACtItem).fetch_all()
+    assert len(items) == 1
+
+
+@pytest.mark.asyncio
+async def test_async_create_tables_raises_if_not_mapped() -> None:
+    """AsyncDatabase.create_tables() raises RuntimeError if not mapped."""
+
+    class ACtItem2(Entity):
+        _table_ = "a_ct_item2"
+        name: Req[str]
+
+    db = AsyncDatabase(entities=[ACtItem2])
+    await db.bind("sqlite", ":memory:")
+
+    with pytest.raises(RuntimeError, match="not mapped"):
+        await db.create_tables()
+
+
+@pytest.mark.asyncio
+async def test_async_drop_table_with_all_data() -> None:
+    """AsyncDatabase.drop_table() with with_all_data=True drops table with data."""
+
+    class ADtItem(Entity):
+        _table_ = "a_dt_item"
+        name: Req[str]
+
+    db = AsyncDatabase(entities=[ADtItem])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True, validate_relations=False)
+
+    await db.ainsert(ADtItem(name="row1"))
+    await db.drop_table("a_dt_item", if_exists=True, with_all_data=True)
+
+
+@pytest.mark.asyncio
+async def test_async_drop_table_without_if_exists() -> None:
+    """AsyncDatabase.drop_table() without if_exists uses plain DROP TABLE."""
+
+    class ADtItem2(Entity):
+        _table_ = "a_dt_item2"
+        name: Req[str]
+
+    db = AsyncDatabase(entities=[ADtItem2])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True, validate_relations=False)
+
+    await db.drop_table("a_dt_item2", if_exists=False, with_all_data=True)
+
+
+@pytest.mark.asyncio
+async def test_async_drop_table_raises_if_not_bound() -> None:
+    """AsyncDatabase.drop_table() raises if database is not bound."""
+
+    class ADtItem3(Entity):
+        _table_ = "a_dt_item3"
+        name: Req[str]
+
+    db = AsyncDatabase(entities=[ADtItem3])
+
+    with pytest.raises(RuntimeError, match="not bound"):
+        await db.drop_table("a_dt_item3")
+
+
+@pytest.mark.asyncio
+async def test_async_drop_table_raises_if_table_has_data() -> None:
+    """AsyncDatabase.drop_table() raises if table has data and with_all_data=False."""
+
+    class ADtItem4(Entity):
+        _table_ = "a_dt_item4"
+        name: Req[str]
+
+    db = AsyncDatabase(entities=[ADtItem4])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True, validate_relations=False)
+    await db.ainsert(ADtItem4(name="row"))
+
+    with pytest.raises(RuntimeError, match="is not empty"):
+        await db.drop_table("a_dt_item4", if_exists=True, with_all_data=False)
+
+
+@pytest.mark.asyncio
+async def test_async_drop_all_tables_with_all_data() -> None:
+    """AsyncDatabase.drop_all_tables() with with_all_data=True drops all tables."""
+
+    class ADatItem(Entity):
+        _table_ = "a_dat_item"
+        name: Req[str]
+
+    db = AsyncDatabase(entities=[ADatItem])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True, validate_relations=False)
+
+    await db.ainsert(ADatItem(name="row1"))
+    await db.drop_all_tables(with_all_data=True)
+
+
+@pytest.mark.asyncio
+async def test_async_drop_all_tables_raises_if_not_mapped() -> None:
+    """AsyncDatabase.drop_all_tables() raises if not mapped."""
+
+    class ADatItem2(Entity):
+        _table_ = "a_dat_item2"
+        name: Req[str]
+
+    db = AsyncDatabase(entities=[ADatItem2])
+    await db.bind("sqlite", ":memory:")
+
+    with pytest.raises(RuntimeError, match="not mapped"):
+        await db.drop_all_tables()
+
+
+@pytest.mark.asyncio
+async def test_async_drop_all_tables_raises_if_table_has_data() -> None:
+    """AsyncDatabase.drop_all_tables() raises if table has data and with_all_data=False."""
+
+    class ADatItem3(Entity):
+        _table_ = "a_dat_item3"
+        name: Req[str]
+
+    db = AsyncDatabase(entities=[ADatItem3])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True, validate_relations=False)
+    await db.ainsert(ADatItem3(name="row"))
+
+    with pytest.raises(RuntimeError, match="is not empty"):
+        await db.drop_all_tables(with_all_data=False)
+
+
+@pytest.mark.asyncio
+async def test_async_drop_table_empty_table_with_all_data_false() -> None:
+    """drop_table() on empty table with with_all_data=False succeeds (line 343->354)."""
+
+    class AEmptyDt(Entity):
+        _table_ = "a_empty_dt"
+        name: Req[str]
+
+    db = AsyncDatabase(entities=[AEmptyDt])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True, validate_relations=False)
+    # Table is empty - no data
+    await db.drop_table("a_empty_dt", if_exists=True, with_all_data=False)
+
+
+@pytest.mark.asyncio
+async def test_async_drop_table_nonexistent_with_all_data_false() -> None:
+    """drop_table() on nonexistent table, with_all_data=False uses except Exception path."""
+
+    class ANeDt(Entity):
+        _table_ = "a_ne_dt"
+        name: Req[str]
+
+    db = AsyncDatabase(entities=[ANeDt])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True, validate_relations=False)
+    # Drop first so table doesn't exist
+    await db.drop_table("a_ne_dt", if_exists=True, with_all_data=True)
+    # Now drop non-existent with with_all_data=False -> except Exception: pass
+    await db.drop_table("a_ne_dt", if_exists=True, with_all_data=False)
+
+
+@pytest.mark.asyncio
+async def test_async_drop_all_tables_empty_tables_with_all_data_false() -> None:
+    """drop_all_tables() with empty tables and with_all_data=False succeeds (lines 383, 386->383)."""
+
+    class AEmptyDat(Entity):
+        _table_ = "a_empty_dat"
+        name: Req[str]
+
+    db = AsyncDatabase(entities=[AEmptyDat])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True, validate_relations=False)
+    # Tables are empty - should succeed
+    await db.drop_all_tables(with_all_data=False)
+
+
+@pytest.mark.asyncio
+async def test_async_drop_all_tables_nonexistent_tables_with_all_data_false() -> None:
+    """drop_all_tables() when tables don't exist uses except Exception path (lines 392-393)."""
+
+    class ANeDat(Entity):
+        _table_ = "a_ne_dat"
+        name: Req[str]
+
+    db = AsyncDatabase(entities=[ANeDat])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True, validate_relations=False)
+    # Drop the table manually so it no longer exists in DB (but still in schema)
+    await db.drop_table("a_ne_dat", if_exists=True, with_all_data=True)
+    # Now drop_all_tables will try SELECT 1 FROM a_ne_dat → OperationalError → except Exception: pass
+    await db.drop_all_tables(with_all_data=False)
+
+
+# ---------------------------------------------------------------------------
+# async_database.py gaps: non-owning O2O and relation-based PK async tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_insert_fk_from_related_obj_when_id_absent() -> None:
+    """Async _do_insert extracts FK from related entity object when _id is None (lines 857-861).
+
+    When an entity's relation FK (_<name>_id) is None but the related entity object (_<name>_obj)
+    is available and is an Entity, _do_insert extracts the PK via _get_pk_val.
+    """
+
+    class _AInsertFKParent(Entity):
+        _table_ = "_a_insert_fk_parent"
+        label: Req[str]
+
+    class _AInsertFKChild(Entity):
+        _table_ = "_a_insert_fk_child"
+        owner: Single[_AInsertFKParent]
+        data: Req[str]
+
+    async with AsyncDatabase(entities=[_AInsertFKParent, _AInsertFKChild]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+
+        parent = _AInsertFKParent(label="parent")
+        await db.asave(parent)
+
+        child = _AInsertFKChild(data="child-data")
+        child.__dict__["_owner_obj"] = parent  # pyright: ignore[reportIndexIssue]
+        await db.asave(child)
+
+        results = await db.aselect(_AInsertFKChild).fetch_all()
+        assert len(results) == 1
+        assert results[0].data == "child-data"
+
+
+@pytest.mark.asyncio
+async def test_async_insert_non_owning_o2o_skips_fk_col() -> None:
+    """Async _do_insert skips FK column not in table (lines 880, 943 — non-owning O2O).
+
+    A non-owning O2O entity has no FK column on its own table.
+    When _do_insert processes owner, 'partner_id' is not in table_col_names → continue (line 880).
+    """
+
+    class _ANonOwnOwner(Entity):
+        _table_ = "_a_non_own_owner"
+        name: Req[str]
+        partner: Single["_ANonOwnPartner"] = Single(nullable=True)  # noqa: UP037
+
+    class _ANonOwnPartner(Entity):
+        _table_ = "_a_non_own_partner"
+        host: PK[_ANonOwnOwner]  # FK lives on partner's table
+        value: Req[str]
+
+    async with AsyncDatabase(entities=[_ANonOwnOwner, _ANonOwnPartner]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+
+        owner = _ANonOwnOwner(name="async-owner")
+        await db.asave(owner)
+
+        partner = _ANonOwnPartner(value="async-partner")
+        partner.__dict__["_host_id"] = owner.id  # pyright: ignore[reportIndexIssue]
+        await db.asave(partner)
+
+        owners = await db.aselect(_ANonOwnOwner).fetch_all()
+        assert len(owners) == 1
+        assert owners[0].name == "async-owner"
+
+
+@pytest.mark.asyncio
+async def test_async_update_fk_from_related_obj() -> None:
+    """Async _do_update extracts FK from related entity object (lines 975-979)."""
+
+    class _AUpdFKParent(Entity):
+        _table_ = "_a_upd_fk_parent"
+        label: Req[str]
+
+    class _AUpdFKChild(Entity):
+        _table_ = "_a_upd_fk_child"
+        owner: Single[_AUpdFKParent]
+        data: Req[str]
+
+    async with AsyncDatabase(entities=[_AUpdFKParent, _AUpdFKChild]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+
+        p1 = _AUpdFKParent(label="p1")
+        await db.asave(p1)
+        child = _AUpdFKChild(data="data")
+        child.__dict__["_owner_id"] = p1.id  # pyright: ignore[reportIndexIssue]
+        await db.asave(child)
+
+        children = await db.aselect(_AUpdFKChild).fetch_all()
+        c = children[0]
+        _ = c.data  # read to populate _read_cols_
+
+        p2 = _AUpdFKParent(label="p2")
+        await db.asave(p2)
+        c.__dict__["_owner_id"] = None  # pyright: ignore[reportIndexIssue]
+        c.__dict__["_owner_obj"] = p2  # pyright: ignore[reportIndexIssue]
+        await db.asave(c)
+
+        result = await db.aselect(_AUpdFKChild).fetch_all()
+        assert len(result) == 1
+
+
+@pytest.mark.asyncio
+async def test_async_update_non_owning_o2o_skips_fk_col() -> None:
+    """Async _do_update skips FK column not in owner's table (line 998).
+
+    Non-owning O2O: FK lives on partner's table, not owner's.
+    _do_update processes owner entity → 'partner_id' not in table_col_names → continue (line 998).
+    """
+
+    class _AUpdNonOwnOwner(Entity):
+        _table_ = "_a_upd_non_own_owner"
+        name: Req[str]
+        partner: Single["_AUpdNonOwnPartner"] = Single(nullable=True)  # noqa: UP037
+
+    class _AUpdNonOwnPartner(Entity):
+        _table_ = "_a_upd_non_own_partner"
+        host: PK[_AUpdNonOwnOwner]
+        value: Req[str]
+
+    async with AsyncDatabase(entities=[_AUpdNonOwnOwner, _AUpdNonOwnPartner]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+
+        owner = _AUpdNonOwnOwner(name="owner")
+        await db.asave(owner)
+
+        partner = _AUpdNonOwnPartner(value="partner")
+        partner.__dict__["_host_id"] = owner.id  # pyright: ignore[reportIndexIssue]
+        await db.asave(partner)
+
+        owners = await db.aselect(_AUpdNonOwnOwner).fetch_all()
+        o = owners[0]
+        _ = o.name  # read to enable optimistic
+        o.name = "owner-updated"
+        await db.asave(o)
+
+        result = await db.aselect(_AUpdNonOwnOwner).fetch_all()
+        assert result[0].name == "owner-updated"
+
+
+@pytest.mark.asyncio
+async def test_async_update_no_read_columns_skips_optimistic() -> None:
+    """Async _do_update with empty read_cols skips optimistic check (line 1004->1013).
+
+    Uses a relation-based PK entity so _pk_val_for uses __dict__.get('_host_id')
+    (bypassing __get__), keeping _read_cols_ empty after load.
+    use_optimistic = False → line 1004 False branch.
+    """
+
+    class _ARelPkOwnerU(Entity):
+        _table_ = "_a_rel_pk_owner_u"
+        label: Req[str]
+
+    class _ARelPkChildU(Entity):
+        _table_ = "_a_rel_pk_child_u"
+        host: PK[_ARelPkOwnerU]  # relation-based PK — _pk_val_for uses __dict__ not __get__
+        value: Req[str]
+
+    async with AsyncDatabase(entities=[_ARelPkOwnerU, _ARelPkChildU]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+
+        owner = _ARelPkOwnerU(label="owner")
+        await db.asave(owner)
+
+        child = _ARelPkChildU(value="initial")
+        child.__dict__["_host_id"] = owner.id  # pyright: ignore[reportIndexIssue]
+        await db.asave(child)
+
+        children = await db.aselect(_ARelPkChildU).fetch_all()
+        assert len(children) == 1
+        c = children[0]
+        c.value = "updated"
+        await db.asave(c)
+
+        result = await db.aselect(_ARelPkChildU).fetch_all()
+        assert result[0].value == "updated"
+
+
+@pytest.mark.asyncio
+async def test_async_map_row_non_owning_o2o_skips_fk_col() -> None:
+    """Async _map_row skips FK column not in owner's table (line 1536).
+
+    Loading a non-owning O2O entity: the FK for 'partner' lives on the partner's table.
+    _map_row processes _a_maprow_owner → 'partner_id' not in table_col_names → continue (1536).
+    """
+
+    class _AMaprowOwner(Entity):
+        _table_ = "_a_maprow_owner"
+        name: Req[str]
+        partner: Single["_AMaprowPartner"] = Single(nullable=True)  # noqa: UP037
+
+    class _AMaprowPartner(Entity):
+        _table_ = "_a_maprow_partner"
+        host: PK[_AMaprowOwner]
+        value: Req[str]
+
+    async with AsyncDatabase(entities=[_AMaprowOwner, _AMaprowPartner]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+
+        owner = _AMaprowOwner(name="maprow-owner")
+        await db.asave(owner)
+
+        partner = _AMaprowPartner(value="maprow-partner")
+        partner.__dict__["_host_id"] = owner.id  # pyright: ignore[reportIndexIssue]
+        await db.asave(partner)
+
+        owners = await db.aselect(_AMaprowOwner).fetch_all()
+        assert len(owners) == 1
+        assert owners[0].name == "maprow-owner"
+
+
+# ---------------------------------------------------------------------------
+# AsyncDatabase._execute() auto-flush and AsyncDatabase.execute() pre-flush
+# ---------------------------------------------------------------------------
+
+
+async def test_async_execute_flushes_pending_before_raw_sql() -> None:
+    """AsyncDatabase.execute() flushes new session entities before raw SQL."""
+
+    class _AExecFlushEntity(Entity):
+        name: Req[str]
+
+    async with AsyncDatabase(entities=[_AExecFlushEntity]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+
+        async with db_session:
+            _AExecFlushEntity(name="pending")
+            # entity is in objects_to_save but not yet in DB
+            # execute() should flush first so the DELETE can see the row
+            deleted = await db.execute("DELETE FROM _aexecflushentity WHERE name = ?", "pending")
+
+        assert deleted == 1
+        assert await db.aselect(_AExecFlushEntity).count() == 0
+
+
+async def test_async_execute_flushes_dirty_before_raw_sql() -> None:
+    """AsyncDatabase.execute() flushes dirty session entities before raw SQL."""
+
+    class _AExecDirtyEntity(Entity):
+        name: Req[str]
+
+    async with AsyncDatabase(entities=[_AExecDirtyEntity]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+
+        e = _AExecDirtyEntity(name="original")
+        await db.asave(e)
+
+        async with db_session:
+            loaded = await db.aselect(_AExecDirtyEntity).fetch_one()
+            assert loaded is not None
+            loaded.name = "dirty"
+            # entity is dirty — execute() should flush first
+            await db.execute("SELECT 1")
+
+        reloaded = await db.aselect(_AExecDirtyEntity).fetch_one()
+        assert reloaded is not None
+        assert reloaded.name == "dirty"
+
+
+async def test_async_execute_flushes_pending_before_select() -> None:
+    """AsyncDatabase._execute() auto-flushes pending objects before SELECT."""
+
+    class _AAutoFlushEntity(Entity):
+        name: Req[str]
+
+    async with AsyncDatabase(entities=[_AAutoFlushEntity]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+
+        async with db_session:
+            _AAutoFlushEntity(name="auto-flushed")
+            # entity is pending — fetch_all() should see it via auto-flush
+            results = await db.aselect(_AAutoFlushEntity).fetch_all()
+
+        assert len(results) == 1
+        assert results[0].name == "auto-flushed"
+
+
+async def test_async_execute_flushes_dirty_before_select() -> None:
+    """AsyncDatabase._execute() auto-flushes dirty objects before SELECT."""
+
+    class _AAutoFlushDirtyEntity(Entity):
+        name: Req[str]
+
+    async with AsyncDatabase(entities=[_AAutoFlushDirtyEntity]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+
+        e = _AAutoFlushDirtyEntity(name="original")
+        await db.asave(e)
+
+        async with db_session:
+            loaded = await db.aselect(_AAutoFlushDirtyEntity).fetch_one()
+            assert loaded is not None
+            loaded.name = "modified"
+            # entity is dirty — fetch_all() should see updated name via auto-flush
+            results = await db.aselect(_AAutoFlushDirtyEntity).fetch_all()
+
+        assert len(results) == 1
+        assert results[0].name == "modified"
+
+
+# ---------------------------------------------------------------------------
+# AsyncQuerySet._build_select: column qualification when JOINs present
+# ---------------------------------------------------------------------------
+
+
+async def test_async_queryset_join_no_ambiguous_column() -> None:
+    """AsyncQuerySet with JOINs qualifies columns to avoid ambiguous column name errors."""
+
+    class _AJoinOwner(Entity):
+        _table_ = "_a_join_owner"
+        name: Req[str]
+
+    class _AJoinChild(Entity):
+        _table_ = "_a_join_child"
+        owner: Single[_AJoinOwner]
+        value: Req[str]
+
+    async with AsyncDatabase(entities=[_AJoinOwner, _AJoinChild]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+
+        owner = _AJoinOwner(name="owner1")
+        await db.asave(owner)
+        child = _AJoinChild(value="child1")
+        vars(child)["_owner_id"] = owner.id
+        await db.asave(child)
+
+        # order_by traversing relation → adds a JOIN → would cause ambiguous 'id'
+        results = await db.aselect(_AJoinChild).order_by(lambda c: c.owner.name).fetch_all()
+        assert len(results) == 1
+        assert results[0].value == "child1"
+
+
+# ---------------------------------------------------------------------------
+# AsyncDatabase._execute(): _flushing_ guard — not reachable in async path
+# (async before_insert is sync-only, cannot recursively trigger async _execute)
+# but the branch is retained for defensive correctness.
+# Test: pending objects belong to a different DB → pending list empty after filter.
+# ---------------------------------------------------------------------------
+
+
+async def test_async_execute_pending_from_other_db_no_flush() -> None:
+    """_execute() skips flush when all pending entities belong to a different database."""
+
+    class _AOtherDbEntity(Entity):
+        name: Req[str]
+
+    class _AThisDbEntity(Entity):
+        name: Req[str]
+
+    async with (
+        AsyncDatabase(entities=[_AOtherDbEntity]) as db1,
+        AsyncDatabase(entities=[_AThisDbEntity]) as db2,
+    ):
+        await db1.bind("sqlite", ":memory:")
+        await db2.bind("sqlite", ":memory:")
+        await db1.generate_mapping(create_tables=True)
+        await db2.generate_mapping(create_tables=True)
+
+        async with db_session:
+            # Pending entity belongs to db1
+            _AOtherDbEntity(name="pending-in-db1")
+            # SELECT on db2 — pending entity (from db1) doesn't belong to db2,
+            # so pending/dirty lists after filtering are empty → 736->745 branch
+            results = await db2.aselect(_AThisDbEntity).fetch_all()
+
+        assert len(results) == 0
+
+
+async def test_async_save_none_opt_str_field_coerced_to_empty_string() -> None:
+    """async _do_insert coerces None to '' for non-nullable str fields (covers line 877)."""
+
+    class _AsyncNullStrEntity(Entity):
+        label: Opt[str]  # Opt[str] is not nullable by default → coerces None to ""
+
+    async with AsyncDatabase(entities=[_AsyncNullStrEntity]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+
+        # Create entity with None str field directly (bypassing descriptor default)
+        e = _AsyncNullStrEntity.__new__(_AsyncNullStrEntity)
+        vars(e)["_db_"] = db
+        vars(e)["label"] = None  # bypass descriptor — simulate explicitly set None
+
+        async with db_session:
+            await db._do_insert(e, _AsyncNullStrEntity, db._schema[_AsyncNullStrEntity._table_name_])
+
+        saved = (
+            await db.aselect(_AsyncNullStrEntity).filter(_AsyncNullStrEntity.id == e.id).fetch_one()
+        )
+        assert saved is not None
+        assert saved.label == ""
+
+
+# ---------------------------------------------------------------------------
+# AsyncQuerySet._build_select: explicit columns + JOIN
+# ---------------------------------------------------------------------------
+
+
+async def test_async_queryset_explicit_columns_with_join() -> None:
+    """AsyncQuerySet with lazy fields (explicit columns) + JOIN qualifies columns correctly."""
+
+    class _AExColParent(Entity):
+        _table_ = "_a_excol_parent"
+        name: Req[str]
+
+    class _AExColChild(Entity):
+        _table_ = "_a_excol_child"
+        parent: Single[_AExColParent]
+        text: Req[str]
+        detail: Req[str] = Req(lazy=True)  # lazy field → _explicit_columns set
+
+    async with AsyncDatabase(entities=[_AExColParent, _AExColChild]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+
+        p1 = _AExColParent(name="Bravo")
+        await db.asave(p1)
+        p2 = _AExColParent(name="Alpha")
+        await db.asave(p2)
+        c1 = _AExColChild(text="child-b", detail="detail-b")
+        vars(c1)["_parent_id"] = p1.id
+        await db.asave(c1)
+        c2 = _AExColChild(text="child-a", detail="detail-a")
+        vars(c2)["_parent_id"] = p2.id
+        await db.asave(c2)
+
+        # order_by traversing relation → JOIN → explicit columns + JOIN → lines 1488-1489
+        results = await db.aselect(_AExColChild).order_by(lambda c: c.parent.name).fetch_all()
+
+        assert len(results) == 2
+        # Ordered by parent name: Alpha < Bravo
+        assert results[0].text == "child-a"
+        assert results[1].text == "child-b"
+
+
+# ---------------------------------------------------------------------------
+# AsyncQuerySet.first()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_first_returns_first_entity() -> None:
+    """first() returns the first matching entity, same as fetch_one()."""
+    async with AsyncDatabase(entities=[AsyncUser]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        await db.asave(AsyncUser(name="alpha", age=1))
+        await db.asave(AsyncUser(name="beta", age=2))
+        result = await db.aselect(AsyncUser).order_by(AsyncUser.name.asc()).first()
+        assert result is not None
+        assert result.name == "alpha"
+
+
+@pytest.mark.asyncio
+async def test_async_first_returns_none_when_empty() -> None:
+    """first() returns None when no rows match."""
+    async with AsyncDatabase(entities=[AsyncUser]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        result = await db.aselect(AsyncUser).first()
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# AsyncQuerySet.prefetch()
+# ---------------------------------------------------------------------------
+
+
+class _APrefetchAuthor(Entity):
+    _table_ = "aprefetch_author"
+    id: PK[int]
+    name: Req[str]
+    books: Set["_APrefetchBook"]  # noqa: UP037
+
+
+class _APrefetchBook(Entity):
+    _table_ = "aprefetch_book"
+    id: PK[int]
+    title: Req[str]
+    author: Single[_APrefetchAuthor | None]
+
+
+@pytest.mark.asyncio
+async def test_async_prefetch_o2m_loads_related() -> None:
+    """prefetch() on a Set relation avoids N+1 queries."""
+    async with AsyncDatabase(entities=[_APrefetchAuthor, _APrefetchBook]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        a1 = _APrefetchAuthor(name="AuthorA")
+        await db.asave(a1)
+        b1 = _APrefetchBook(title="Book1")
+        vars(b1)["_author_id"] = a1.id
+        await db.asave(b1)
+        b2 = _APrefetchBook(title="Book2")
+        vars(b2)["_author_id"] = a1.id
+        await db.asave(b2)
+
+        authors = await db.aselect(_APrefetchAuthor).prefetch(_APrefetchAuthor.books).fetch_all()
+        assert len(authors) == 1
+        col = vars(authors[0]).get("_books_col")
+        assert col is not None
+        assert len(col._cache) == 2
+
+
+@pytest.mark.asyncio
+async def test_async_prefetch_string_attr_name() -> None:
+    """prefetch() accepts string attribute names."""
+    async with AsyncDatabase(entities=[_APrefetchAuthor, _APrefetchBook]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        a = _APrefetchAuthor(name="Str")
+        await db.asave(a)
+        authors = await db.aselect(_APrefetchAuthor).prefetch("books").fetch_all()
+        assert len(authors) == 1
+        col = vars(authors[0]).get("_books_col")
+        assert col is not None
+        assert col._cache == []
+
+
+@pytest.mark.asyncio
+async def test_async_prefetch_invalid_relation_raises() -> None:
+    """prefetch() raises ValueError for unknown relation name."""
+    async with AsyncDatabase(entities=[_APrefetchAuthor, _APrefetchBook]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        await db.asave(_APrefetchAuthor(name="X"))
+        with pytest.raises(ValueError, match="no relation"):
+            await db.aselect(_APrefetchAuthor).prefetch("nonexistent").fetch_all()
+
+
+@pytest.mark.asyncio
+async def test_async_prefetch_single_relation() -> None:
+    """prefetch() on a Single relation batch-loads FK targets."""
+    async with AsyncDatabase(entities=[_APrefetchAuthor, _APrefetchBook]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        a = _APrefetchAuthor(name="FK Author")
+        await db.asave(a)
+        b = _APrefetchBook(title="FK Book")
+        vars(b)["_author_id"] = a.id
+        await db.asave(b)
+
+        books = await db.aselect(_APrefetchBook).prefetch("author").fetch_all()
+        assert len(books) == 1
+        loaded_author = vars(books[0]).get("_author_obj")
+        assert loaded_author is not None
+        assert loaded_author.name == "FK Author"
+
+
+@pytest.mark.asyncio
+async def test_async_prefetch_single_null_fk() -> None:
+    """prefetch() on Single sets None when no FK rows exist."""
+    async with AsyncDatabase(entities=[_APrefetchAuthor, _APrefetchBook]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        b = _APrefetchBook(title="Orphan")
+        await db.asave(b)
+
+        books = await db.aselect(_APrefetchBook).prefetch("author").fetch_all()
+        assert len(books) == 1
+        loaded_author = vars(books[0]).get("_author_obj")
+        assert loaded_author is None
+
+
+@pytest.mark.asyncio
+async def test_async_prefetch_invalid_attr_raises() -> None:
+    """prefetch() raises ValueError when attr has no 'name'."""
+    async with AsyncDatabase(entities=[_APrefetchAuthor]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        with pytest.raises(ValueError, match="Cannot determine relation name"):
+            db.aselect(_APrefetchAuthor).prefetch(42)  # pyright: ignore
+
+
+@pytest.mark.asyncio
+async def test_async_prefetch_on_fetch_one() -> None:
+    """prefetch() also works with fetch_one()."""
+    async with AsyncDatabase(entities=[_APrefetchAuthor, _APrefetchBook]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        a = _APrefetchAuthor(name="SingleFetch")
+        await db.asave(a)
+        b = _APrefetchBook(title="OnlyBook")
+        vars(b)["_author_id"] = a.id
+        await db.asave(b)
+
+        author = await db.aselect(_APrefetchAuthor).prefetch(_APrefetchAuthor.books).fetch_one()
+        assert author is not None
+        col = vars(author).get("_books_col")
+        assert col is not None
+        assert len(col._cache) == 1
+
+
+@pytest.mark.asyncio
+async def test_async_prefetch_none_results_noop() -> None:
+    """prefetch() with fetch_one() returning None does not error."""
+    async with AsyncDatabase(entities=[_APrefetchAuthor]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        # No rows — fetch_one returns None; prefetch should not be called
+        result = await db.aselect(_APrefetchAuthor).prefetch("books").fetch_one()
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# AsyncQuerySet.show()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_show_alias_for_show() -> None:
+    async with AsyncDatabase(entities=[AsyncUser]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        await db.asave(AsyncUser(name="ShowMe", age=7))
+
+        f1 = io.StringIO()
+        await db.aselect(AsyncUser).show(file=f1)
+        output = f1.getvalue()
+        assert "ShowMe" in output
+        assert "7" in output
+
+
+# ---------------------------------------------------------------------------
+# AsyncDatabase.disconnect()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_disconnect_closes_connection() -> None:
+    """disconnect() closes the underlying async connection."""
+    db = AsyncDatabase(entities=[AsyncUser])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True)
+    assert db._connection is not None
+    await db.disconnect()
+    assert db._connection is None
+
+
+# ---------------------------------------------------------------------------
+# AsyncDatabase.get_ddl()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_get_ddl_empty_before_mapping() -> None:
+    """get_ddl() returns [] before generate_mapping() is called."""
+    db = AsyncDatabase(entities=[AsyncUser])
+    await db.bind("sqlite", ":memory:")
+    try:
+        assert db.get_ddl() == []
+    finally:
+        await db.close()
+
+
+# ---------------------------------------------------------------------------
+# AsyncDatabase.unbind()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_unbind_clears_state() -> None:
+    """unbind() closes the connection and resets all provider state."""
+    db = AsyncDatabase(entities=[AsyncUser])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True)
+    assert db.is_bound
+    await db.unbind()
+    assert not db.is_bound
+    assert db._connection is None
+    assert db._schema == {}
+    assert db._provider is None
+
+
+# ---------------------------------------------------------------------------
+# AsyncDatabase.migrate()
+# ---------------------------------------------------------------------------
+
+
+class _AMigrateUser(Entity):
+    _table_ = "amigrate_user"
+    name: Req[str]
+
+
+@pytest.mark.asyncio
+async def test_async_migrate_creates_tables() -> None:
+    """migrate() creates missing tables."""
+    db = AsyncDatabase(entities=[_AMigrateUser])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=False)
+    stmts = await db.migrate()
+    assert any("CREATE TABLE" in s.upper() for s in stmts)
+    # Table should now exist
+    await db.asave(_AMigrateUser(name="test"))
+    assert await db.aselect(_AMigrateUser).count() == 1
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_async_migrate_is_idempotent() -> None:
+    """migrate() returns [] when no changes are needed."""
+    db = AsyncDatabase(entities=[_AMigrateUser])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True)
+    stmts = await db.migrate()
+    assert stmts == []
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_async_migrate_not_bound_raises() -> None:
+    """migrate() raises RuntimeError when not bound."""
+    db = AsyncDatabase(entities=[_AMigrateUser])
+    with pytest.raises(RuntimeError, match="not bound"):
+        await db.migrate()
+
+
+@pytest.mark.asyncio
+async def test_async_migrate_no_mapping_raises() -> None:
+    """migrate() raises RuntimeError when generate_mapping not called."""
+    db = AsyncDatabase(entities=[_AMigrateUser])
+    await db.bind("sqlite", ":memory:")
+    try:
+        with pytest.raises(RuntimeError, match="Schema is empty"):
+            await db.migrate()
+    finally:
+        await db.close()
+
+
+# ---------------------------------------------------------------------------
+# AsyncQuerySet._do_async_prefetch — branch coverage
+# ---------------------------------------------------------------------------
+
+
+class _APrefetchTag(Entity):
+    _table_ = "aprefetch_tag"
+    id: PK[int]
+    label: Req[str]
+    articles: Set["_APrefetchArticle"]  # noqa: UP037
+
+
+class _APrefetchArticle(Entity):
+    _table_ = "aprefetch_article"
+    id: PK[int]
+    title: Req[str]
+    tags: Set[_APrefetchTag]
+
+
+@pytest.mark.asyncio
+async def test_async_prefetch_empty_results_noop() -> None:
+    """_do_async_prefetch with empty results returns immediately."""
+    async with AsyncDatabase(entities=[_APrefetchAuthor, _APrefetchBook]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        # No data — fetch_all returns [] — prefetch is called with empty list
+        authors = await db.aselect(_APrefetchAuthor).prefetch("books").fetch_all()
+        assert authors == []
+
+
+@pytest.mark.asyncio
+async def test_async_prefetch_m2m_with_data() -> None:
+    """prefetch() on an M2M Set relation loads related items."""
+    async with AsyncDatabase(entities=[_APrefetchTag, _APrefetchArticle]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        tag = _APrefetchTag(label="python")
+        art = _APrefetchArticle(title="article1")
+        await db.asave(tag)
+        await db.asave(art)
+        # Insert M2M join manually
+        join_table = "_".join(sorted(["aprefetch_tag", "aprefetch_article"]))
+        await db._execute_dml(
+            f"INSERT INTO {join_table} (aprefetch_tag_id, aprefetch_article_id) VALUES (?, ?)",
+            [tag.id, art.id],
+        )
+
+        articles = await db.aselect(_APrefetchArticle).prefetch("tags").fetch_all()
+        assert len(articles) == 1
+        col = vars(articles[0]).get("_tags_col")
+        assert col is not None
+        assert len(col._cache) == 1
+        assert col._cache[0].label == "python"
+
+
+@pytest.mark.asyncio
+async def test_async_prefetch_m2m_no_related() -> None:
+    """prefetch() M2M branch attaches empty cache when no join rows exist."""
+    async with AsyncDatabase(entities=[_APrefetchTag, _APrefetchArticle]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        art = _APrefetchArticle(title="lonely article")
+        await db.asave(art)
+
+        articles = await db.aselect(_APrefetchArticle).prefetch("tags").fetch_all()
+        assert len(articles) == 1
+        col = vars(articles[0]).get("_tags_col")
+        assert col is not None
+        assert col._cache == []
+
+
+@pytest.mark.asyncio
+async def test_async_prefetch_single_unresolvable_target_skipped() -> None:
+    """prefetch on a Single with unresolvable target is silently skipped."""
+
+    class _AGhostParent(Entity):
+        _table_ = "aghost_parent"
+        label: Req[str]
+        ghost: Single["_CompletelyMissingAsyncEntity"]  # type: ignore[name-defined]  # noqa: F821, UP037
+
+    db = AsyncDatabase(entities=[_AGhostParent])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True)
+    p = _AGhostParent(label="x")
+    vars(p)["_ghost_id"] = 1
+    await db.asave(p)
+    results = await db.aselect(_AGhostParent).prefetch("ghost").fetch_all()
+    assert len(results) == 1
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_async_prefetch_single_no_pk_skipped() -> None:
+    """prefetch on a Single where the target has no PK is silently skipped."""
+
+    class _ANoPKTarget(Entity):
+        _table_ = "anopk_target"
+        name: Req[str]
+
+    class _ANoPKOwner(Entity):
+        _table_ = "anopk_owner"
+        label: Req[str]
+        ref: Single[_ANoPKTarget | None]
+
+    db = AsyncDatabase(entities=[_ANoPKTarget, _ANoPKOwner])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True)
+    t = _ANoPKTarget(name="t")
+    await db.asave(t)
+    o = _ANoPKOwner(label="o")
+    vars(o)["_ref_id"] = t.id
+    await db.asave(o)
+
+    orig_pk_field = _ANoPKTarget._pk_field_
+    orig_pk_fields = _ANoPKTarget._pk_fields_
+    try:
+        _ANoPKTarget._pk_field_ = None  # pyright: ignore
+        _ANoPKTarget._pk_fields_ = ()
+        results = await db.aselect(_ANoPKOwner).prefetch("ref").fetch_all()
+        assert len(results) == 1
+    finally:
+        _ANoPKTarget._pk_field_ = orig_pk_field
+        _ANoPKTarget._pk_fields_ = orig_pk_fields
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_async_prefetch_no_pk_fields_owner_skipped() -> None:
+    """_do_async_prefetch silently returns when owner entity has no pk_fields."""
+    async with AsyncDatabase(entities=[_APrefetchAuthor, _APrefetchBook]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+        a = _APrefetchAuthor(name="NoPK")
+        await db.asave(a)
+
+        orig_pk_fields = _APrefetchAuthor._pk_fields_
+        try:
+            _APrefetchAuthor._pk_fields_ = ()
+            results = await db.aselect(_APrefetchAuthor).prefetch("books").fetch_all()
+            assert len(results) == 1
+        finally:
+            _APrefetchAuthor._pk_fields_ = orig_pk_fields
+
+
+@pytest.mark.asyncio
+async def test_async_prefetch_set_no_back_ref_skipped() -> None:
+    """prefetch() O2M branch silently skips relations with no back-reference."""
+
+    class _ANoBackRefParent(Entity):
+        _table_ = "anobackref_parent"
+        name: Req[str]
+        children: Set["_ANoBackRefChild"]  # noqa: UP037
+
+    class _ANoBackRefChild(Entity):
+        _table_ = "anobackref_child"
+        label: Req[str]
+        parent: Single[_ANoBackRefParent | None]
+
+    db = AsyncDatabase(entities=[_ANoBackRefParent, _ANoBackRefChild])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True)
+    p = _ANoBackRefParent(name="p")
+    await db.asave(p)
+
+    # Temporarily remove back-ref from the child's relations so back_ref lookup fails
+    child_relations = dict(_ANoBackRefChild._relations_)
+    _ANoBackRefChild._relations_ = {}
+    try:
+        results = await db.aselect(_ANoBackRefParent).prefetch("children").fetch_all()
+        assert len(results) == 1
+    finally:
+        _ANoBackRefChild._relations_ = child_relations
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_async_prefetch_set_unresolvable_target_skipped() -> None:
+    """prefetch() on a Set with unresolvable target is silently skipped."""
+
+    class _AUnresolvableParentX(Entity):
+        _table_ = "aunresolvable_parentx"
+        name: Req[str]
+        stuff: Set["_ACompletelyMissingEntityX"]  # type: ignore[name-defined]  # noqa: F821, UP037
+
+    db = AsyncDatabase(entities=[_AUnresolvableParentX])
+    await db.bind("sqlite", ":memory:")
+    await db.generate_mapping(create_tables=True, validate_relations=False)
+    p = _AUnresolvableParentX(name="x")
+    await db.asave(p)
+    results = await db.aselect(_AUnresolvableParentX).prefetch("stuff").fetch_all()
+    assert len(results) == 1
+    await db.close()
+
+
+# ---------------------------------------------------------------------------
+# async_capture_sql edge case — __aexit__ without __aenter__
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_capture_sql_aexit_without_aenter_noop() -> None:
+    """__aexit__ without __aenter__ (token is None) is a no-op."""
+    from nextorm import async_capture_sql as _acs  # noqa: PLC0415
+
+    ctx = _acs()
+    # Do NOT call __aenter__ — token remains None
+    await ctx.__aexit__(None, None, None)  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# async_introspect_sqlite — index coverage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_introspect_sqlite_with_index() -> None:
+    """async_introspect_sqlite records explicitly created indexes."""
+    from nextorm.schema.introspect import async_introspect_sqlite  # noqa: PLC0415
+
+    db = AsyncDatabase(entities=[])
+    await db.bind("sqlite", ":memory:")
+    try:
+        conn = db._ensure_connection()
+        # Create a table with an explicit index
+        await db._async_provider_instance.execute_ddl(  # type: ignore[union-attr]
+            conn,
+            [
+                "CREATE TABLE idx_test (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+                "CREATE INDEX idx_idx_test__name ON idx_test (name)",
+            ],
+        )
+        schema = await async_introspect_sqlite(conn)
+        assert "idx_test" in schema
+        idx_names = {i.name for i in schema["idx_test"].indexes}
+        assert "idx_idx_test__name" in idx_names
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_async_introspect_sqlite_non_explicit_index_skipped() -> None:
+    """async_introspect_sqlite skips implicit UNIQUE constraint indexes."""
+    from nextorm.schema.introspect import async_introspect_sqlite  # noqa: PLC0415
+
+    db = AsyncDatabase(entities=[])
+    await db.bind("sqlite", ":memory:")
+    try:
+        conn = db._ensure_connection()
+        await db._async_provider_instance.execute_ddl(  # type: ignore[union-attr]
+            conn,
+            ["CREATE TABLE unique_test (id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE)"],
+        )
+        schema = await async_introspect_sqlite(conn)
+        assert "unique_test" in schema
+        # Implicit UNIQUE index should be absent
+        assert schema["unique_test"].indexes == []
+    finally:
+        await db.close()

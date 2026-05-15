@@ -14,13 +14,21 @@ objects in the target schema — their equivalent constraints are encoded in the
 
 from __future__ import annotations
 
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from nextorm.fields import AttrValue
 from nextorm.providers.base import SyncConnection
 from nextorm.schema.core import Column, Index, Table
 
-__all__ = ["introspect_sqlite", "introspect_postgres", "introspect_mariadb"]
+if TYPE_CHECKING:
+    from nextorm.providers.base import AsyncConnection
+
+__all__ = [
+    "introspect_sqlite",
+    "introspect_postgres",
+    "introspect_mariadb",
+    "async_introspect_sqlite",
+]
 
 
 def introspect_sqlite(conn: SyncConnection) -> dict[str, Table]:
@@ -269,4 +277,62 @@ def introspect_mariadb(conn: SyncConnection) -> dict[str, Table]:
         tables[table_name] = Table(name=table_name, columns=columns, indexes=indexes)
 
     cur.close()
+    return tables
+
+
+async def async_introspect_sqlite(conn: AsyncConnection) -> dict[str, Table]:
+    """Async version of :func:`introspect_sqlite` for use with async providers.
+
+    Uses the async cursor API so it is safe to call from asyncio code without
+    blocking the event loop.
+
+    Parameters
+    ----------
+    conn:
+        An open :class:`~nextorm.providers.base.AsyncConnection` to a SQLite
+        database (typically an :class:`~nextorm.providers.sqlite.SQLiteAsyncConnection`).
+
+    Returns
+    -------
+    dict[str, Table]
+        Mapping of table name → :class:`~nextorm.schema.core.Table`, equivalent
+        to :func:`introspect_sqlite`.
+    """
+    cur = await conn.cursor()
+
+    await cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    )
+    table_names: list[str] = [row[0] for row in await cur.fetchall()]
+
+    tables: dict[str, Table] = {}
+    for table_name in table_names:
+        await cur.execute(f'PRAGMA table_info("{table_name}")')  # noqa: S608
+        col_rows = list(await cur.fetchall())
+        columns = [
+            Column(
+                name=row[1],
+                py_type=cast("type[AttrValue]", object),
+                nullable=not row[3] and not bool(row[5]),
+                primary_key=bool(row[5]),
+            )
+            for row in col_rows
+        ]
+
+        await cur.execute(f'PRAGMA index_list("{table_name}")')  # noqa: S608
+        index_rows = list(await cur.fetchall())
+        indexes: list[Index] = []
+        for row in index_rows:
+            idx_name = str(row[1])
+            unique = bool(row[2])
+            origin = str(row[3])
+            if origin != "c":
+                continue
+            await cur.execute(f'PRAGMA index_info("{idx_name}")')  # noqa: S608
+            idx_cols = [str(r[2]) for r in await cur.fetchall()]
+            indexes.append(Index(name=idx_name, columns=idx_cols, unique=unique))
+
+        tables[table_name] = Table(name=table_name, columns=columns, indexes=indexes)
+
+    await cur.close()
     return tables

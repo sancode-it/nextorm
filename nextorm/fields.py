@@ -15,10 +15,11 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from nextorm.collection import RelatedCollection
-    from nextorm.entity import Entity
+    from nextorm.entity import Entity, _LazyType
     from nextorm.expr import ColumnExpr
 
 __all__ = [
+    "_positional_args_for_type",
     "FieldSpec",
     "RelationSpec",
     "RelationKind",
@@ -49,6 +50,8 @@ __all__ = [
     "_generate_ulid",
     # Value serialisation helper (used by database layer)
     "_serialize_value",
+    # Positional arg resolver (used by EntityMeta)
+    "_positional_args_for_type",
 ]
 
 type Numeric = bool | int | float | Decimal
@@ -258,7 +261,16 @@ def field_class_getitem[FT: Field[OptAttrValue], T](
             if "auto" in allowed_keywords:  # pragma: no branch
                 opts.setdefault("auto", True)
         if prefix == "Opt" and "nullable" in allowed_keywords and "nullable" not in opts:
-            opts.setdefault("nullable", True)
+            # str and LongStr use empty string as default instead of NULL;
+            # only set nullable=True for all other Opt types.
+            if item is not str and not (isinstance(item, type) and issubclass(item, LongStr)):  # pyright: ignore[reportUnnecessaryIsInstance]
+                opts.setdefault("nullable", True)  # pragma: no cover
+            else:
+                # Opt[str] / Opt[LongStr] without nullable=True: default value is ""
+                # so that newly created entities always have the empty string rather
+                # than None for these fields.
+                if "default" not in opts:
+                    opts["default"] = ""
 
         # Only allow known keywords
         for k in opts:
@@ -426,10 +438,24 @@ class PK[T: PkValue](Marker[T]):
         raise NotImplementedError
 
     def __class_getitem__(cls, item: type[T]) -> type[PK[T]]:
-        from nextorm.entity import Entity
+        import typing
+
+        from nextorm.entity import Entity, _LazyType  # noqa: PLC0415
+
+        # Forward references (string, ForwardRef, _LazyType) always refer to entities.
+        if isinstance(item, (str, typing.ForwardRef, _LazyType)):
+            return cast(
+                "type[PK[T]]",
+                relation_class_getitem(Single, cast("type[T]", item), "PK"),
+            )
 
         # If item is a subclass of Entity, treat as relation marker, else as field marker
-        if issubclass(item, Entity):
+        try:
+            is_entity = issubclass(item, Entity)
+        except TypeError:
+            is_entity = False
+
+        if is_entity:
             # Use Relation as the base for the relation marker factory
             return cast("type[PK[T]]", relation_class_getitem(Single, item, "PK"))
         else:
@@ -470,6 +496,7 @@ class Field[T](Marker[T]):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self._options = kwargs
+        self._args = args  # positional args resolved later by EntityMeta using inner_type
 
     @overload
     def __get__(self, obj: None, owner: type) -> ColumnExpr: ...
@@ -499,7 +526,7 @@ class Req[T: AttrValue](Field[T]):
 
     .. code-block:: python
 
-        class Product(Entity):commit 
+        class Product(Entity):commit
             name: Req[str] = Req(max_len=120, unique=True)
             stock: Req[int] = Req(default=0, min=0)
             slug: Req[str] = Req(unique=True, index=True)
@@ -995,7 +1022,7 @@ class RelationSpec:
     """
 
     kind: str = ""  # filled in by EntityMeta when used as class-level value
-    target: type[Any] | str | None = (
+    target: type[Any] | str | _LazyType | None = (
         None  # filled in by EntityMeta; None when used as inline override
     )
     cascade_delete: bool | None = None  # None = auto-derive from nullable
@@ -1298,6 +1325,35 @@ def _generate_ulid() -> ULID:
 
 
 # ---------------------------------------------------------------------------
+# Positional arg resolver — used by EntityMeta to resolve Field._args
+# ---------------------------------------------------------------------------
+
+
+def _positional_args_for_type(inner_type: type) -> tuple[str, ...]:
+    """Return the ordered positional argument names for *inner_type*.
+
+    Used by :class:`~nextorm.entity.EntityMeta` to resolve the positional args
+    stored in :attr:`Field._args` when the field is declared without a
+    subscripted right-hand side (e.g. ``price: Req[Decimal] = Req(9, 2)``).
+    """
+    if inner_type is int:
+        return ("size",)
+    if inner_type is float:
+        return ("tolerance",)
+    if inner_type is Decimal:
+        return ("precision", "scale")
+    if inner_type is str or inner_type is LongStr:
+        return ("max_len",)
+    if inner_type in (time, timedelta, datetime, DateTimeTz):
+        return ("precision",)
+    if inner_type is Vec:
+        return ("dimensions",)
+    if inner_type in (uuid7, uuid4, ulid):
+        return ("uuid_auto",)
+    return ()
+
+
+# ---------------------------------------------------------------------------
 # Value serialisation helper — used by the database layer
 # ---------------------------------------------------------------------------
 
@@ -1306,9 +1362,14 @@ def _serialize_value(value: Any) -> Any:
     """Coerce a Python value to a form accepted by all DB drivers.
 
     - :class:`enum.Enum` instances → ``.value``  (str / int / …)
+    - :class:`decimal.Decimal` instances → ``str`` (preserves scale and precision)
     - All other values are returned unchanged; driver-level adapters (e.g.
       ``sqlite3.register_adapter``) handle the remaining conversions.
     """
+    from decimal import Decimal
+
     if isinstance(value, Enum):
         return value.value
+    if isinstance(value, Decimal):
+        return str(value)
     return value

@@ -574,6 +574,28 @@ def test_do_update_set_relation_skipped_in_loop() -> None:
     db.close()
 
 
+def test_do_update_set_relation_skipped_on_loaded_entity() -> None:
+    """_do_update iterates and skips SET relations when updating a pre-existing entity.
+
+    Covers the ``1223->1222`` branch: when the for-loop in _do_update encounters
+    a SET relation, the ``if ri.spec.kind == SINGLE`` condition is False and
+    the loop continues to the next iteration without entering the if body.
+    """
+    db = Database(entities=[Article, Tag])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True, validate_relations=False)
+    with db_session:
+        Article(id=10, title="original")
+    with db_session:
+        loaded = db.select(Article).filter(Article.id == 10).fetch_one()
+        assert loaded is not None
+        loaded.title = "modified"
+    result = db.select(Article).filter(Article.id == 10).fetch_one()
+    assert result is not None
+    assert result.title == "modified"
+    db.close()
+
+
 # ---------------------------------------------------------------------------
 # insert() — forced INSERT regardless of PK
 # ---------------------------------------------------------------------------
@@ -1400,3 +1422,1306 @@ def test_validate_relations_with_string_target() -> None:
 
     # String targets should resolve via entity_by_name
     db.generate_mapping(validate_relations=True)
+
+
+# ---------------------------------------------------------------------------
+# Table management methods: create_tables, drop_table, drop_all_tables
+# ---------------------------------------------------------------------------
+
+
+def test_drop_all_tables_without_data_check() -> None:
+    """Database.drop_all_tables(with_all_data=False) checks for data."""
+
+    class Item(Entity):
+        name: Req[str]
+
+    db = Database(entities=[Item])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    # Insert data
+    with db_session:
+        db.save(Item(name="Widget"))
+
+    # Attempt to drop without with_all_data should raise
+    with pytest.raises(RuntimeError, match="is not empty"):
+        db.drop_all_tables(with_all_data=False)
+
+    # After clearing data, should succeed
+    with db_session:
+        for item in Item.select().fetch_all():
+            item.delete()
+
+    db.drop_all_tables(with_all_data=False)
+
+
+def test_disconnect_closes_connections() -> None:
+    """Database.disconnect() closes the connection pool."""
+
+    class DisconnectUser(Entity):
+        _table_name_ = "disconnect_user"
+        name: Req[str]
+
+    db = Database(entities=[DisconnectUser])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=False)
+
+    # Ensure a connection exists
+    conn = db.get_connection()
+    db._release_connection(conn)
+
+    # Disconnect should close the pool
+    db.disconnect()
+
+    # Pool should be closed or reset (no errors on next call)
+    db.disconnect()  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# Database.create_tables / drop_table / drop_all_tables
+# ---------------------------------------------------------------------------
+
+
+def test_create_tables_after_generate_mapping() -> None:
+    """Database.create_tables() creates tables after generate_mapping(create_tables=False)."""
+
+    class CtItem(Entity):
+        _table_ = "ct_item"
+        name: Req[str]
+
+    db = Database(entities=[CtItem])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=False, validate_relations=False)
+
+    # Tables don't exist yet - create them
+    db.create_tables()
+
+    # Verify tables are usable
+    with db_session:
+        db.save(CtItem(name="test"))
+
+    with db_session:
+        items = db.select(CtItem).fetch_all()
+    assert len(items) == 1
+
+
+def test_create_tables_raises_if_not_mapped() -> None:
+    """Database.create_tables() raises RuntimeError if database is not mapped."""
+
+    class CtItem2(Entity):
+        _table_ = "ct_item2"
+        name: Req[str]
+
+    db = Database(entities=[CtItem2])
+    db.bind("sqlite", ":memory:")
+
+    with pytest.raises(RuntimeError, match="not mapped"):
+        db.create_tables()
+
+
+def test_drop_table_with_all_data_true() -> None:
+    """Database.drop_table() with with_all_data=True drops table even with data."""
+
+    class DtItem(Entity):
+        _table_ = "dt_item"
+        name: Req[str]
+
+    db = Database(entities=[DtItem])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True, validate_relations=False)
+
+    with db_session:
+        db.save(DtItem(name="row1"))
+
+    db.drop_table("dt_item", if_exists=True, with_all_data=True)
+
+
+def test_drop_table_without_if_exists() -> None:
+    """Database.drop_table() without if_exists uses plain DROP TABLE."""
+
+    class DtItem2(Entity):
+        _table_ = "dt_item2"
+        name: Req[str]
+
+    db = Database(entities=[DtItem2])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True, validate_relations=False)
+
+    db.drop_table("dt_item2", if_exists=False, with_all_data=True)
+
+
+def test_drop_table_raises_if_not_bound() -> None:
+    """Database.drop_table() raises if database is not bound."""
+
+    class DtItem3(Entity):
+        _table_ = "dt_item3"
+        name: Req[str]
+
+    db = Database(entities=[DtItem3])
+
+    with pytest.raises(RuntimeError, match="not bound"):
+        db.drop_table("dt_item3")
+
+
+def test_drop_table_raises_if_table_has_data() -> None:
+    """Database.drop_table() raises if table has data and with_all_data=False."""
+
+    class DtItem4(Entity):
+        _table_ = "dt_item4"
+        name: Req[str]
+
+    db = Database(entities=[DtItem4])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True, validate_relations=False)
+
+    with db_session:
+        db.save(DtItem4(name="row"))
+
+    with pytest.raises(RuntimeError, match="is not empty"):
+        db.drop_table("dt_item4", if_exists=True, with_all_data=False)
+
+
+def test_drop_all_tables_with_all_data() -> None:
+    """Database.drop_all_tables() with with_all_data=True drops all tables."""
+
+    class DatItem(Entity):
+        _table_ = "dat_item"
+        name: Req[str]
+
+    db = Database(entities=[DatItem])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True, validate_relations=False)
+
+    with db_session:
+        db.save(DatItem(name="row1"))
+        db.save(DatItem(name="row2"))
+
+    db.drop_all_tables(with_all_data=True)
+
+
+def test_drop_table_empty_table_with_all_data_false_succeeds() -> None:
+    """drop_table() on an empty table with with_all_data=False should succeed (line 549->555)."""
+
+    class EmptyDtItem(Entity):
+        _table_ = "empty_dt_item"
+        name: Req[str]
+
+    db = Database(entities=[EmptyDtItem])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True, validate_relations=False)
+    # Table is empty - no data inserted
+    db.drop_table("empty_dt_item", if_exists=True, with_all_data=False)
+
+
+def test_drop_table_nonexistent_table_with_if_exists_false_data_check() -> None:
+    """drop_table() non-existent table, with_all_data=False uses except Exception path."""
+
+    class NonExistDtItem(Entity):
+        _table_ = "nonexist_dt_item"
+        name: Req[str]
+
+    db = Database(entities=[NonExistDtItem])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True, validate_relations=False)
+    # Drop the table first so it doesn't exist
+    db.drop_table("nonexist_dt_item", if_exists=True, with_all_data=True)
+
+    # Now try to drop non-existent table with with_all_data=False
+    # cursor.execute() will raise OperationalError (non-RuntimeError) -> except Exception: pass
+    db.drop_table("nonexist_dt_item", if_exists=True, with_all_data=False)
+
+
+def test_drop_all_tables_raises_if_not_mapped() -> None:
+    """Database.drop_all_tables() raises RuntimeError if database is not mapped (line 591)."""
+
+    class DatUnmapped(Entity):
+        _table_ = "dat_unmapped"
+        name: Req[str]
+
+    db = Database(entities=[DatUnmapped])
+    db.bind("sqlite", ":memory:")
+
+    with pytest.raises(RuntimeError, match="not mapped"):
+        db.drop_all_tables()
+
+
+def test_disconnect_closes_pool_when_pool_exists() -> None:
+    """Database.disconnect() closes pool when pool_max > 1 (lines 633-634)."""
+
+    class PoolEntity(Entity):
+        _table_ = "pool_entity"
+        name: Req[str]
+
+    # Create pool by specifying pool_max > 1
+    db = Database(entities=[PoolEntity])
+    db.bind("sqlite", ":memory:", pool_max=2)
+
+    # Pool should now exist
+    assert db._pool is not None
+
+    db.disconnect()
+
+    # Pool should be closed and set to None
+    assert db._pool is None
+
+
+def test_do_insert_fk_extracted_from_obj_when_id_absent() -> None:
+    """_do_insert extracts FK from related entity obj when _<rel>_id is absent.
+
+    Covers line 1106: when the FK id is not set in __dict__ but the related entity
+    object IS cached, _get_pk_val(related_entity) is used to derive the FK value.
+    """
+    db = Database(entities=[_FKParent, _FKChild])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    with db_session:
+        p = _FKParent(label="par-before-child")
+        c = _FKChild(label="child-with-obj")
+        # Assign parent before it has a PK; SingleDescriptor stores _parent_id=None
+        # and _parent_obj=p. Then save parent first so it gets a PK.
+        c.parent = p
+        # Now save parent → p gets an id
+        db.save(p)
+        # At this point c.__dict__["_parent_id"] is still None (was set when p.id was None)
+        # but c.__dict__["_parent_obj"] = p (which now has id). _do_insert reads id from obj.
+        db.save(c)
+
+    children = db.select(_FKChild).fetch_all()
+    assert len(children) == 1
+    assert children[0].label == "child-with-obj"
+    db.close()
+
+
+def test_do_insert_single_fk_not_in_table_is_skipped() -> None:
+    """_do_insert skips FK columns that are not in the actual table.
+
+    Covers line 1125: when ri.spec.column points to a non-existent column,
+    the column is silently skipped to avoid SQL errors.
+    """
+
+    class _NoColParent(Entity):
+        _table_ = "_no_col_parent"
+        name: Req[str]
+
+    class _ChildWithWrongCol(Entity):
+        _table_ = "_child_with_wrong_col"
+        # Specify a column name that will NOT exist in the generated table
+        owner: Single[_NoColParent] = Single(column="nonexistent_fk_col")
+        data: Opt[str]
+
+    db = Database(entities=[_NoColParent, _ChildWithWrongCol])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    with db_session:
+        p = _NoColParent(name="parent")
+        db.flush()
+        c = _ChildWithWrongCol(data="test")
+        c.owner = p
+
+    rows = db.select(_ChildWithWrongCol).fetch_all()
+    assert len(rows) == 1
+    db.close()
+
+
+def test_do_update_single_fk_not_in_table_is_skipped() -> None:
+    """_do_update skips FK columns that are not in the actual table (database.py 1249).
+
+    A non-owning O2O relation: the FK lives on the target's table, not the owner's.
+    When _do_update processes the owner entity, it tries fk_col='partner_id' which
+    is not in the owner's table columns → hits the `continue` at line 1249.
+    """
+
+    class _NonOwnParentWithRef(Entity):
+        _table_ = "_non_own_parent_ref"
+        name: Req[str]
+        # This is the non-owning side: the FK lives on _NonOwnChild2.host_id, not here
+        child_ref: Single["_NonOwnChild2"] = Single(nullable=True)  # noqa: UP037
+
+    class _NonOwnChild2(Entity):
+        _table_ = "_non_own_child2"
+        host: PK[_NonOwnParentWithRef]
+        label: Req[str]
+
+    db = Database(entities=[_NonOwnParentWithRef, _NonOwnChild2])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    with db_session:
+        p = _NonOwnParentWithRef(name="parent")
+        db.flush()
+        c = _NonOwnChild2(label="child")
+        c.host = p
+        db.flush()
+
+    # Load and update parent — _do_update processes child_ref (non-owning SINGLE)
+    # fk_col = 'child_ref_id' is NOT in _non_own_parent_ref table → continue → line 1249
+    with db_session:
+        parents = db.select(_NonOwnParentWithRef).fetch_all()
+        assert len(parents) == 1
+        parent = parents[0]
+        _ = parent.name  # read to enable optimistic
+        parent.name = "updated"
+        db.flush()
+
+    result = db.select(_NonOwnParentWithRef).fetch_all()
+    assert result[0].name == "updated"
+    db.close()
+
+
+def test_do_update_fk_extracted_from_related_obj() -> None:
+    """_do_update extracts FK from the related entity object when _id is None (database.py 1230).
+
+    When a relation attribute is set to an unsaved entity (PK=None), after that entity
+    is saved, the FK id stored in _<rel>_id remains None. _do_update then extracts
+    the PK from _<rel>_obj.
+    """
+    db = Database(entities=[_FKParent, _FKChild])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    with db_session:
+        # Create and save child first with a parent
+        p1 = _FKParent(label="original-parent")
+        db.flush()
+        c = _FKChild(label="child-to-update")
+        c.parent = p1
+        db.flush()
+
+    # Now update the relation to a new unsaved parent
+    with db_session:
+        loaded_c = db.select(_FKChild).fetch_one()
+        assert loaded_c is not None
+
+        # Create new parent WITHOUT saving first (has no PK)
+        p2 = _FKParent(label="new-parent")
+        # Assign to child: _parent_id=None (p2 has no PK), _parent_obj=p2
+        loaded_c.parent = p2
+        # Now save p2 → it gets a PK
+        db.flush()
+        # At this point loaded_c._parent_id=None but _parent_obj=p2 (with PK now)
+        # _do_update should extract FK from p2 via _get_pk_val (line 1230)
+        # Mark child as dirty explicitly
+        from nextorm.session import _get_session_stack
+
+        cache = _get_session_stack().current
+        if cache is not None:
+            cache.mark_dirty(loaded_c)
+        db.flush()
+
+    children = db.select(_FKChild).fetch_all()
+    assert len(children) == 1
+    db.close()
+
+
+def test_do_update_no_read_columns_skips_optimistic() -> None:
+    """_do_update with empty read_cols skips optimistic concurrency check (database.py 1256->1263).
+
+    Entities with a relation-based PK don't have a scalar id field, so _pk_val_for
+    reads the FK value via entity.__dict__.get('_host_id') — bypassing FieldDescriptor.__get__
+    and leaving _read_cols_ empty. When _do_update is called, read_cols_snapshot=frozenset()
+    → use_optimistic = False → the first `if use_optimistic:` False branch at line 1256.
+    """
+
+    class _RelPkOwnerU(Entity):
+        _table_ = "_rel_pk_owner_u"
+        label: Req[str]
+
+    class _RelPkChildU(Entity):
+        _table_ = "_rel_pk_child_u"
+        host: PK[_RelPkOwnerU]  # relation-based PK — no scalar PK field
+        value: Req[str]
+
+    db = Database(entities=[_RelPkOwnerU, _RelPkChildU])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    with db_session:
+        owner = _RelPkOwnerU(label="owner")
+        db.flush()
+        child = _RelPkChildU(value="initial")
+        child.host = owner
+        db.flush()
+
+    # Load from DB: _map_row sets _read_cols_ = set()
+    # _pk_val_for(_RelPkChildU, 'host') uses __dict__.get('_host_id')
+    # — no __get__ → _read_cols_ stays empty
+    with db_session:
+        children = db.select(_RelPkChildU).fetch_all()
+        assert len(children) == 1
+        child = children[0]
+        # Set field WITHOUT reading anything — _read_cols_ stays empty
+        child.value = "updated"
+        # _do_update: read_cols_snapshot = frozenset() → use_optimistic = False → line 1256 False
+        db.flush()
+
+    result = db.select(_RelPkChildU).fetch_all()
+    assert result[0].value == "updated"
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Database.execute() flushes pending session entities first
+# ---------------------------------------------------------------------------
+
+
+def test_execute_flushes_pending_before_raw_sql() -> None:
+    """db.execute() auto-flushes new entities before executing the raw SQL."""
+
+    class _ExecFlushEntity(Entity):
+        name: Req[str]
+
+    db = Database(entities=[_ExecFlushEntity])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    with db_session:
+        _ExecFlushEntity(name="pending")
+        # entity is in objects_to_save but not yet in DB
+        # execute() should flush first so the DELETE can see the row
+        deleted = db.execute("DELETE FROM _execflushentity WHERE name = ?", "pending")
+
+    assert deleted == 1
+    assert db.select(_ExecFlushEntity).count() == 0
+    db.close()
+
+
+def test_execute_flush_dirty_before_raw_sql() -> None:
+    """db.execute() flushes dirty entities before executing the raw SQL."""
+
+    class _ExecDirtyEntity(Entity):
+        name: Req[str]
+
+    db = Database(entities=[_ExecDirtyEntity])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    e = _ExecDirtyEntity(name="original")
+    db.save(e)
+
+    with db_session:
+        loaded = db.select(_ExecDirtyEntity).fetch_one()
+        assert loaded is not None
+        loaded.name = "updated"
+        # entity is dirty — execute() should flush first
+        db.execute("SELECT 1")
+
+    reloaded = db.select(_ExecDirtyEntity).fetch_one()
+    assert reloaded is not None
+    assert reloaded.name == "updated"
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Database._execute() auto-flush before SELECT queries
+# ---------------------------------------------------------------------------
+
+
+def test_select_auto_flushes_pending_before_fetch() -> None:
+    """_execute() auto-flushes pending entities so a SELECT sees them immediately."""
+
+    class _SelectFlushPending(Entity):
+        name: Req[str]
+
+    db = Database(entities=[_SelectFlushPending])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    with db_session:
+        _SelectFlushPending(name="not-yet-saved")
+        # entity is pending — fetch_all() calls _execute() which auto-flushes first
+        results = db.select(_SelectFlushPending).fetch_all()
+
+    assert len(results) == 1
+    assert results[0].name == "not-yet-saved"
+    db.close()
+
+
+def test_select_auto_flushes_dirty_before_fetch() -> None:
+    """_execute() auto-flushes dirty entities so a SELECT sees the updated values."""
+
+    class _SelectFlushDirty(Entity):
+        name: Req[str]
+
+    db = Database(entities=[_SelectFlushDirty])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    e = _SelectFlushDirty(name="original")
+    db.save(e)
+
+    with db_session:
+        loaded = db.select(_SelectFlushDirty).fetch_one()
+        assert loaded is not None
+        loaded.name = "dirty-value"
+        # entity is dirty — fetch_all() calls _execute() which auto-flushes first
+        results = db.select(_SelectFlushDirty).fetch_all()
+
+    assert len(results) == 1
+    assert results[0].name == "dirty-value"
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Database._execute() recursive _flushing_ guard
+# ---------------------------------------------------------------------------
+
+
+def test_execute_recursive_flushing_guard_via_before_insert() -> None:
+    """_flushing_ guard prevents recursive auto-flush when before_insert triggers a SELECT."""
+    selects_during_insert: list[int] = []
+
+    class _RecursiveGuardEntity(Entity):
+        name: Req[str]
+
+        def before_insert(self) -> None:
+            # SELECT while _flushing_ is True — should not recurse
+            count = db.select(_RecursiveGuardEntity).count()
+            selects_during_insert.append(count)
+
+    db = Database(entities=[_RecursiveGuardEntity])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    with db_session:
+        _RecursiveGuardEntity(name="trigger")
+        # SELECT triggers _execute() → auto-flush (sets _flushing_=True) → before_insert
+        # → another SELECT (hits _flushing_ guard → 1066->1092) → safe, no recursion
+        results = db.select(_RecursiveGuardEntity).fetch_all()
+
+    assert len(results) == 1
+    # The SELECT inside before_insert ran safely (count was 0 since not committed yet)
+    assert selects_during_insert == [0]
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Database.save() re-entrancy guard (_saving_ set)
+# ---------------------------------------------------------------------------
+
+
+def test_save_reentrancy_guard_in_before_insert() -> None:
+    """before_insert calling db.save(self) is safely ignored by the _saving_ guard."""
+
+    class _ReentrantSave(Entity):
+        name: Req[str]
+
+        def before_insert(self) -> None:
+            # Try to save ourselves again — should hit the _saving_ guard and return
+            db.save(self)  # covers 750->752 (saving_set non-empty) and 754 (id in set)
+
+    db = Database(entities=[_ReentrantSave])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    e = _ReentrantSave(name="self-save")
+    db.save(e)  # should not raise or double-insert
+
+    count = db.select(_ReentrantSave).count()
+    assert count == 1
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Database.flush() skips entities already saved by auto-flush
+# ---------------------------------------------------------------------------
+
+
+def test_flush_skips_entity_already_saved_by_auto_flush() -> None:
+    """flush() skips pending entities that were already saved (have _dbvals_) by before_insert."""
+
+    _dep_ref: list[Any] = []
+
+    class _AlreadySavedDep(Entity):
+        name: Req[str]
+
+    class _AlreadySavedMain(Entity):
+        name: Req[str]
+
+        def before_insert(self) -> None:
+            # Save the other pending entity directly, giving it _dbvals_
+            if _dep_ref:
+                db.save(_dep_ref[0])  # _dep now in DB, has _dbvals_
+
+    db = Database(entities=[_AlreadySavedDep, _AlreadySavedMain])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    with db_session:
+        # Create main FIRST so it comes first in objects_to_save
+        main = _AlreadySavedMain(name="main")  # noqa: F841  # pyright: ignore[reportUnusedVariable]
+        dep = _AlreadySavedDep(name="dep")
+        _dep_ref.append(dep)
+        # flush() snapshot = [main, dep].
+        # Saves main → before_insert saves dep → dep has _dbvals_, removed from objects_to_save.
+        # Loop then reaches dep: _dbvals_ present → 425->417 branch (skip saving dep again)
+        db.flush()
+
+    assert db.select(_AlreadySavedDep).count() == 1
+    assert db.select(_AlreadySavedMain).count() == 1
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# _do_insert: None str field coerced to "" (covers database.py ~1273)
+# ---------------------------------------------------------------------------
+
+
+def test_do_insert_none_opt_str_field_coerced_to_empty_string() -> None:
+    """_do_insert coerces None to '' for non-nullable str fields."""
+
+    class _NullStrInsert(Entity):
+        label: Opt[str]  # Opt[str] has nullable=False by default, stores ""
+
+    db = Database(entities=[_NullStrInsert])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    # Create entity with None str field directly (bypassing descriptor default)
+    e = _NullStrInsert.__new__(_NullStrInsert)
+    vars(e)["_db_"] = db
+    vars(e)["label"] = None  # bypass descriptor — simulate explicitly set None
+    with db_session:
+        db._do_insert(e, _NullStrInsert, db._schema[_NullStrInsert._table_name_])
+
+    saved = db.select(_NullStrInsert).filter(_NullStrInsert.id == e.id).fetch_one()
+    assert saved is not None
+    assert saved.label == ""
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# delete_instance cascade: SINGLE relation cascade_delete=True
+# ---------------------------------------------------------------------------
+
+
+def test_delete_instance_cascade_single_relation() -> None:
+    """delete_instance cascades to a non-owning Single relation with cascade_delete=True."""
+
+    class _CascSingleChild(Entity):
+        value: Req[str]
+        # parent relation defined below (forward ref resolved at mapping)
+
+    class _CascSingleParent(Entity):
+        name: Req[str]
+        # child: non-owning back-ref with cascade_delete (FK is on _CascSingleChild's table)
+        child: Single[_CascSingleChild] = Single(cascade_delete=True, reverse="parent")
+
+    # Add parent relation to child (FK lives here)
+    _CascSingleChild.__annotations__["parent"] = _CascSingleParent
+    # Use explicit relation setup via entity metadata
+    from nextorm.fields import RelationKind, RelationSpec  # noqa: PLC0415
+
+    _CascSingleChild._relations_["parent"] = type(  # pyright: ignore[reportArgumentType]
+        "RelationInfo",
+        (),
+        {
+            "name": "parent",
+            "spec": RelationSpec(
+                kind=RelationKind.SINGLE,
+                target=_CascSingleParent,
+                cascade_delete=False,
+                nullable=False,
+            ),
+        },
+    )()
+
+    db = Database(entities=[_CascSingleParent, _CascSingleChild])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    parent = _CascSingleParent(name="parent")
+    db.save(parent)
+    child = _CascSingleChild(value="child-value")
+    vars(child)["_parent_id"] = parent.id
+    db.save(child)
+
+    # Verify setup
+    assert db.select(_CascSingleChild).count() == 1
+
+    # Delete parent → should cascade to child
+    db.delete_instance(parent)
+
+    assert db.select(_CascSingleParent).count() == 0
+    assert db.select(_CascSingleChild).count() == 0
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# delete_instance cascade: SET (O2M) relation
+# ---------------------------------------------------------------------------
+
+
+def test_delete_instance_cascade_set_o2m() -> None:
+    """delete_instance cascades to children in a one-to-many SET relation."""
+
+    class _CascO2MParent(Entity):
+        name: Req[str]
+        items: Set["_CascO2MChild"]  # noqa: UP037
+
+    class _CascO2MChild(Entity):
+        parent: Single[_CascO2MParent] = Single(cascade_delete=True)
+        value: Req[str]
+
+    db = Database(entities=[_CascO2MParent, _CascO2MChild])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    parent = _CascO2MParent(name="parent")
+    db.save(parent)
+    child1 = _CascO2MChild(value="child1")
+    vars(child1)["_parent_id"] = parent.id
+    db.save(child1)
+    child2 = _CascO2MChild(value="child2")
+    vars(child2)["_parent_id"] = parent.id
+    db.save(child2)
+
+    assert db.select(_CascO2MChild).count() == 2
+
+    db.delete_instance(parent)
+
+    assert db.select(_CascO2MParent).count() == 0
+    assert db.select(_CascO2MChild).count() == 0
+    db.close()
+
+
+def test_delete_instance_cascade_set_nullable_fk() -> None:
+    """delete_instance sets FK to NULL for children with nullable FK (no cascade)."""
+
+    class _NullFKParent(Entity):
+        name: Req[str]
+        items: Set["_NullFKChild"]  # noqa: UP037
+
+    class _NullFKChild(Entity):
+        parent: Single[_NullFKParent] = Single(nullable=True)
+        value: Req[str]
+
+    db = Database(entities=[_NullFKParent, _NullFKChild])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    parent = _NullFKParent(name="parent")
+    db.save(parent)
+    child = _NullFKChild(value="child")
+    vars(child)["_parent_id"] = parent.id
+    db.save(child)
+
+    db.delete_instance(parent)
+
+    assert db.select(_NullFKParent).count() == 0
+    # Child should still exist with NULL FK
+    rows = db._execute("SELECT COUNT(*) FROM _nullfkchild", [])
+    assert rows[0][0] == 1
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# delete_instance cascade: SET (M2M) relation
+# ---------------------------------------------------------------------------
+
+
+def test_delete_instance_cascade_set_m2m() -> None:
+    """delete_instance removes join-table rows for M2M SET relations."""
+
+    class _CascM2MLeft(Entity):
+        name: Req[str]
+        rights: Set["_CascM2MRight"]  # noqa: UP037
+
+    class _CascM2MRight(Entity):
+        name: Req[str]
+        lefts: Set[_CascM2MLeft]
+
+    db = Database(entities=[_CascM2MLeft, _CascM2MRight])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    left = _CascM2MLeft(name="left")
+    db.save(left)
+    right = _CascM2MRight(name="right")
+    db.save(right)
+
+    # Add M2M link via join table
+    with db_session:
+        l_loaded = db.select(_CascM2MLeft).fetch_one()
+        assert l_loaded is not None
+        l_loaded.rights.add(right)
+
+    # Verify join table has a row
+    join_table = "_".join(sorted(["_cascm2mleft", "_cascm2mright"]))
+    rows = db._execute(f"SELECT COUNT(*) FROM {join_table}", [])
+    assert rows[0][0] == 1
+
+    # Delete left → should remove join table rows
+    db.delete_instance(left)
+
+    rows_after = db._execute(f"SELECT COUNT(*) FROM {join_table}", [])
+    assert rows_after[0][0] == 0
+    assert db.select(_CascM2MLeft).count() == 0
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# _do_insert / _do_update: pending Set relation items are flushed before join-table insert
+# ---------------------------------------------------------------------------
+
+
+def test_do_insert_flushes_pending_set_relation_items() -> None:
+    """When an M2M Set relation is assigned a list of unsaved items before save, they're flushed."""
+
+    class _SetPendingLeft(Entity):
+        name: Req[str]
+        rights: Set["_SetPendingRight"]  # noqa: UP037
+
+    class _SetPendingRight(Entity):
+        name: Req[str]
+        lefts: Set[_SetPendingLeft]
+
+    db = Database(entities=[_SetPendingLeft, _SetPendingRight])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    left = _SetPendingLeft.__new__(_SetPendingLeft)
+    vars(left)["_db_"] = db
+    vars(left)["name"] = "left"
+
+    right = _SetPendingRight.__new__(_SetPendingRight)
+    vars(right)["_db_"] = db
+    vars(right)["name"] = "right"
+
+    # Store pending rights list as deferred list (as RelationDescriptor.__set__ would do
+    # on a not-yet-persisted entity)
+    vars(left)["_rights_col"] = [right]
+
+    with db_session:
+        db._do_insert(left, _SetPendingLeft, db._schema[_SetPendingLeft._table_name_])
+
+    assert db.select(_SetPendingLeft).count() == 1
+    assert db.select(_SetPendingRight).count() == 1
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Database._execute(): empty pending after filtering by db (1083->1092)
+# ---------------------------------------------------------------------------
+
+
+def test_select_skips_flush_when_pending_belongs_to_other_db() -> None:
+    """_execute() skips flush when all pending entities belong to a different database."""
+
+    class _OtherDbEnt(Entity):
+        name: Req[str]
+
+    class _ThisDbEnt(Entity):
+        name: Req[str]
+
+    db1 = Database(entities=[_OtherDbEnt])
+    db1.bind("sqlite", ":memory:")
+    db1.generate_mapping(create_tables=True)
+
+    db2 = Database(entities=[_ThisDbEnt])
+    db2.bind("sqlite", ":memory:")
+    db2.generate_mapping(create_tables=True)
+
+    with db_session:
+        # Pending entity belongs to db1
+        _OtherDbEnt(name="pending-in-db1")
+        # SELECT on db2 — pending entity (from db1) doesn't match db2 filter
+        # → pending list empty after filter → 1083->1092 branch
+        results = db2.select(_ThisDbEnt).fetch_all()
+
+    assert len(results) == 0
+    db1.close()
+    db2.close()
+
+
+# ---------------------------------------------------------------------------
+# delete_instance cascade: Single — various edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_delete_instance_cascade_single_owning_side_skips() -> None:
+    """Owning-side Single with cascade_delete=True skips cascade (FK is on our table)."""
+
+    class _SingleTarget(Entity):
+        value: Req[str]
+
+    class _SingleOwner(Entity):
+        name: Req[str]
+        target: Single[_SingleTarget] = Single(cascade_delete=True)
+        # This is OWNING: target_id is on _SingleOwner's table
+
+    db = Database(entities=[_SingleOwner, _SingleTarget])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    target = _SingleTarget(value="val")
+    db.save(target)
+    owner = _SingleOwner(name="owner")
+    vars(owner)["_target_id"] = target.id
+    db.save(owner)
+
+    # Delete owner — cascade_delete=True but FK is on OUR table (owning side) → skip cascade
+    db.delete_instance(owner)
+
+    # Owner deleted, target still exists (no cascade for owning side)
+    assert db.select(_SingleOwner).count() == 0
+    assert db.select(_SingleTarget).count() == 1  # target still exists!
+    db.close()
+
+
+def test_delete_instance_cascade_single_no_reverse_skips() -> None:
+    """Non-owning Single with cascade_delete=True but no reverse → cascade skipped (879->888)."""
+
+    class _NoRevProfile(Entity):
+        detail: Req[str]
+        user: Single[_NoRevUser2] = Single(owner=True)  # owning: user_id on Profile
+
+    class _NoRevUser2(Entity):
+        name: Req[str]
+        # Non-owning O2O: FK is on _NoRevProfile's table, NOT on user's table
+        profile: Single[_NoRevProfile] = Single(cascade_delete=True, owner=False)
+
+    db = Database(entities=[_NoRevUser2, _NoRevProfile])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    # Verify FK is NOT on user's table (non-owning setup)
+    assert "profile_id" not in db._schema[_NoRevUser2._table_name_].column_names()
+
+    user = _NoRevUser2(name="user")
+    db.save(user)
+
+    # Delete user — cascade_delete=True, non-owning (profile_id NOT in user's table),
+    # AND no 'reverse' set → 879->888 branch (skip cascade)
+    db.delete_instance(user)
+
+    assert db.select(_NoRevUser2).count() == 0
+    db.close()
+
+
+def test_delete_instance_cascade_single_related_not_found() -> None:
+    """Non-owning Single with cascade_delete=True + reverse, but no related entity (886->888)."""
+
+    class _NoRelChild(Entity):
+        value: Req[str]
+
+    class _NoRelParent(Entity):
+        name: Req[str]
+        # Non-owning backref with cascade_delete + explicit reverse
+        # Use column="ghost_col" so the cascade code sees non-owning side
+        child: Single[_NoRelChild] = Single(cascade_delete=True, reverse="parent", column="ghost_col")
+
+    # Register parent relation on child manually so the cascade code finds it
+    from nextorm.fields import RelationKind, RelationSpec  # noqa: PLC0415
+
+    child_parent_spec = RelationSpec(
+        kind=RelationKind.SINGLE,
+        target=_NoRelParent,
+        cascade_delete=False,
+        nullable=False,
+    )
+
+    class _ParentRelInfo:
+        name = "parent"
+        spec = child_parent_spec
+
+    _NoRelChild._relations_["parent"] = _ParentRelInfo()  # type: ignore[assignment]
+
+    db = Database(entities=[_NoRelParent, _NoRelChild])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    parent = _NoRelParent(name="parent-no-child")
+    db.save(parent)
+
+    # Delete parent — cascade_delete + reverse, but NO related child → 886->888 branch (skip)
+    db.delete_instance(parent)
+
+    assert db.select(_NoRelParent).count() == 0
+    assert db.select(_NoRelChild).count() == 0
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# delete_instance cascade: SET M2M with explicit reverse (covers 904-906)
+# ---------------------------------------------------------------------------
+
+
+def test_delete_instance_cascade_m2m_with_explicit_reverse() -> None:
+    """M2M cascade with explicit reverse attribute uses back_ri to determine M2M (904-906)."""
+
+    class _M2MRevLeft(Entity):
+        name: Req[str]
+        rights: Set[_M2MRevRight] = Set(reverse="lefts")  # explicit reverse
+
+    class _M2MRevRight(Entity):
+        name: Req[str]
+        lefts: Set[_M2MRevLeft]
+
+    db = Database(entities=[_M2MRevLeft, _M2MRevRight])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    left = _M2MRevLeft(name="left")
+    db.save(left)
+    right = _M2MRevRight(name="right")
+    db.save(right)
+
+    with db_session:
+        l_loaded = db.select(_M2MRevLeft).fetch_one()
+        assert l_loaded is not None
+        l_loaded.rights.add(right)
+
+    # Delete left → uses explicit reverse to determine M2M → 904-906 covered
+    db.delete_instance(left)
+
+    assert db.select(_M2MRevLeft).count() == 0
+    db.close()
+
+
+def test_delete_instance_cascade_set_reverse_back_ri_none() -> None:
+    """Set cascade with explicit reverse but target has no such relation (905->913)."""
+
+    class _905Target(Entity):
+        value: Req[str]
+
+    class _905Owner(Entity):
+        name: Req[str]
+
+    db = Database(entities=[_905Owner, _905Target])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    # Add a phantom Set relation AFTER mapping with reverse="ghost" but _905Target has no "ghost"
+    from nextorm.fields import RelationKind, RelationSpec  # noqa: PLC0415
+
+    phantom_spec = RelationSpec(
+        kind=RelationKind.SET,
+        target=_905Target,
+        cascade_delete=True,
+        nullable=False,
+        reverse="ghost",
+    )
+
+    class _PhantomSetInfo:
+        name = "phantom_set"
+        spec = phantom_spec
+
+    _905Owner._relations_["phantom_set"] = _PhantomSetInfo()  # type: ignore[assignment]
+
+    owner = _905Owner(name="owner")
+    db.save(owner)
+
+    # Delete owner — reverse="ghost" set but _905Target has no "ghost" relation
+    # → back_ri is None → 905->913 branch (is_m2m stays False, then no back_ref → continue)
+    db.delete_instance(owner)
+
+    assert db.select(_905Owner).count() == 0
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# _do_insert pending items: already-saved item skipped (1383->1382)
+# ---------------------------------------------------------------------------
+
+
+def test_do_insert_skips_already_saved_set_relation_item() -> None:
+    """When a pending M2M item is already saved (_dbvals_ set), _do_insert skips saving it."""
+
+    class _SkipSavedLeft(Entity):
+        name: Req[str]
+        rights: Set["_SkipSavedRight"]  # noqa: UP037
+
+    class _SkipSavedRight(Entity):
+        name: Req[str]
+        lefts: Set[_SkipSavedLeft]
+
+    db = Database(entities=[_SkipSavedLeft, _SkipSavedRight])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    # Save right first so it has _dbvals_
+    right = _SkipSavedRight(name="right-already-saved")
+    db.save(right)
+    assert "_dbvals_" in vars(right)
+
+    left = _SkipSavedLeft.__new__(_SkipSavedLeft)
+    vars(left)["_db_"] = db
+    vars(left)["name"] = "left"
+
+    # Store already-saved right in deferred list — _do_insert will skip save (1383->1382 branch)
+    vars(left)["_rights_col"] = [right]
+
+    with db_session:
+        db._do_insert(left, _SkipSavedLeft, db._schema[_SkipSavedLeft._table_name_])
+
+    assert db.select(_SkipSavedLeft).count() == 1
+    assert db.select(_SkipSavedRight).count() == 1  # right was not double-saved
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# _do_update pending Set relation items (1502-1510)
+# ---------------------------------------------------------------------------
+
+
+def test_do_update_processes_pending_set_relation_items() -> None:
+    """_do_update processes deferred Set relation items stored in entity vars."""
+
+    class _UpdPendLeft(Entity):
+        name: Req[str]
+        rights: Set["_UpdPendRight"]  # noqa: UP037
+
+    class _UpdPendRight(Entity):
+        name: Req[str]
+        lefts: Set[_UpdPendLeft]
+
+    db = Database(entities=[_UpdPendLeft, _UpdPendRight])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    left = _UpdPendLeft(name="left")
+    db.save(left)
+
+    # right_saved: already has _dbvals_ → 1508 False branch
+    right_saved = _UpdPendRight(name="right-saved")
+    db.save(right_saved)
+    assert "_dbvals_" in vars(right_saved)
+
+    # right_unsaved: no _dbvals_ → 1508 True branch → save called (1509 covered)
+    right_unsaved = _UpdPendRight.__new__(_UpdPendRight)
+    vars(right_unsaved)["_db_"] = db
+    vars(right_unsaved)["name"] = "right-unsaved"
+
+    # Both in pending: covers both branches of `if "_dbvals_" not in vars(item):`
+    vars(left)["_rights_col"] = [right_saved, right_unsaved]
+
+    from nextorm.database import _get_pk_val  # noqa: PLC0415
+
+    pk_val = _get_pk_val(left)
+    with db_session:
+        db._do_update(left, _UpdPendLeft, db._schema[_UpdPendLeft._table_name_], pk_val)
+
+    assert db.select(_UpdPendLeft).count() == 1
+    assert db.select(_UpdPendRight).count() == 2
+    db.close()
+
+
+def test_do_update_empty_pending_set_skips_add() -> None:
+    """_do_update with empty pending list covers 1505->1497 (empty list, no add called)."""
+
+    class _EmptyPendLeft(Entity):
+        name: Req[str]
+        rights: Set["_EmptyPendRight"]  # noqa: UP037
+
+    class _EmptyPendRight(Entity):
+        name: Req[str]
+        lefts: Set[_EmptyPendLeft]
+
+    db = Database(entities=[_EmptyPendLeft, _EmptyPendRight])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    left = _EmptyPendLeft(name="left")
+    db.save(left)
+
+    # Empty list → isinstance([], list) True but `if pending:` False → 1505->1497 branch
+    vars(left)["_rights_col"] = []
+
+    from nextorm.database import _get_pk_val  # noqa: PLC0415
+
+    pk_val = _get_pk_val(left)
+    with db_session:
+        db._do_update(left, _EmptyPendLeft, db._schema[_EmptyPendLeft._table_name_], pk_val)
+
+    assert db.select(_EmptyPendLeft).count() == 1
+    assert db.select(_EmptyPendRight).count() == 0
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# delete_instance cascade: Single — reverse found but rev_ri is None (881->888)
+# ---------------------------------------------------------------------------
+
+
+def test_delete_instance_cascade_single_reverse_not_found_on_target() -> None:
+    """Non-owning Single cascade with 'reverse' set but target has no such relation (881->888)."""
+
+    class _881Target(Entity):
+        value: Req[str]
+
+    class _881Owner(Entity):
+        name: Req[str]
+
+    db = Database(entities=[_881Owner, _881Target])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    # Add a phantom Single relation on _881Owner AFTER mapping:
+    # - cascade_delete=True so it won't be skipped early
+    # - reverse="ghost" but _881Target has NO "ghost" relation
+    # - ghost_rel_id NOT in _881owner's table (added after mapping) → non-owning
+    from nextorm.fields import RelationKind, RelationSpec  # noqa: PLC0415
+
+    ghost_spec = RelationSpec(
+        kind=RelationKind.SINGLE,
+        target=_881Target,
+        cascade_delete=True,
+        nullable=False,
+        reverse="ghost",
+    )
+
+    class _GhostRelInfo:
+        name = "ghost_rel"
+        spec = ghost_spec
+
+    _881Owner._relations_["ghost_rel"] = _GhostRelInfo()  # type: ignore[assignment]
+
+    owner = _881Owner(name="owner")
+    db.save(owner)
+
+    # Delete owner — cascade has reverse="ghost" but _881Target has no "ghost" relation
+    # → rev_ri is None → 881->888 branch
+    db.delete_instance(owner)
+
+    assert db.select(_881Owner).count() == 0
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# delete_instance cascade: composite PK owner (952-964)
+# ---------------------------------------------------------------------------
+
+
+def test_delete_instance_cascade_composite_pk_o2m() -> None:
+    """delete_instance on composite-PK entity cascades to O2M children (952-964)."""
+    from nextorm import PrimaryKey  # noqa: PLC0415
+
+    class _CompPKPar(Entity):
+        code: Req[str]
+        ver: Req[int]
+        children: Set["_CompPKKid"]  # noqa: UP037
+        _pk_ = PrimaryKey("code", "ver")
+
+    class _CompPKKid(Entity):
+        parent: Single[_CompPKPar]
+        value: Req[str]
+
+    db = Database(entities=[_CompPKPar, _CompPKKid])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    with db_session:
+        parent = _CompPKPar(code="x", ver=1)
+        db.save(parent)
+        db.save(_CompPKKid(parent=parent, value="child1"))
+
+    assert db.select(_CompPKKid).count() == 1
+
+    # delete_instance cascades to children using composite PK condition (952-964)
+    db.delete_instance(parent)
+
+    assert db.select(_CompPKPar).count() == 0
+    assert db.select(_CompPKKid).count() == 0
+    db.close()

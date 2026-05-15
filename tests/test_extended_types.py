@@ -400,7 +400,7 @@ class TestDateTimeTzEntityMapping:
         assert col is not None
         assert col.py_type is DateTimeTz
         sql = SQLiteRenderer().create_table(table)
-        assert "starts_at TEXT NOT NULL" in sql
+        assert '"starts_at" TEXT NOT NULL' in sql
 
     def test_datetimetz_column_postgres_ddl(self) -> None:
         sql = PostgresRenderer().create_table(entity_to_table(EventEntity))

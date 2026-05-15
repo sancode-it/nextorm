@@ -249,10 +249,16 @@ def test_local_marker_rejects_unknown_kwarg() -> None:
 # --- Opt[str]() marker call → triggers the nullable default path (line 261 in fields.py) ---
 
 
-def test_opt_str_marker_empty_call_sets_nullable() -> None:
-    """Opt[str]() called with no args should set nullable=True via the PEP path."""
+def test_opt_str_marker_empty_call_sets_default_empty_string() -> None:
+    """Opt[str]() called with no args should set default="" (not nullable=True).
+
+    Opt[str] without nullable=True uses empty string as the zero-value and
+    stores the column as NOT NULL. nullable=True must be passed explicitly
+    to allow SQL NULL.
+    """
     marker = Opt[str]()
-    assert marker._options.get("nullable") is True
+    assert marker._options.get("default") == ""
+    assert marker._options.get("nullable") is not True
 
 
 # ---------------------------------------------------------------------------
@@ -320,3 +326,126 @@ def test_local_set_raises_not_implemented() -> None:
     marker = Local[int]()
     with pytest.raises(NotImplementedError):
         marker.__set__(object(), 1)
+
+
+# ---------------------------------------------------------------------------
+# _positional_args_for_type — direct function coverage
+# ---------------------------------------------------------------------------
+# These tests call _positional_args_for_type directly to cover all branches
+# (int, float, Decimal, str/LongStr, time/timedelta/datetime/DateTimeTz, Vec,
+# uuid types) without needing full entity-class definitions.
+
+from datetime import datetime as _datetime  # noqa: E402
+from datetime import time as _time  # noqa: E402
+from datetime import timedelta as _timedelta  # noqa: E402
+from decimal import Decimal as _Decimal  # noqa: E402
+
+from nextorm.fields import (  # noqa: E402
+    DateTimeTz as _DateTimeTz,
+)
+from nextorm.fields import (  # noqa: E402
+    _positional_args_for_type,
+)
+from nextorm.fields import (  # noqa: E402
+    ulid as _ulid,
+)
+from nextorm.fields import (  # noqa: E402
+    uuid4 as _uuid4,
+)
+from nextorm.fields import (  # noqa: E402
+    uuid7 as _uuid7,
+)
+
+
+def test_positional_args_for_int_returns_size() -> None:
+    assert _positional_args_for_type(int) == ("size",)
+
+
+def test_positional_args_for_float_returns_tolerance() -> None:
+    assert _positional_args_for_type(float) == ("tolerance",)
+
+
+def test_positional_args_for_decimal_returns_precision_scale() -> None:
+    assert _positional_args_for_type(_Decimal) == ("precision", "scale")
+
+
+def test_positional_args_for_time_returns_precision() -> None:
+    assert _positional_args_for_type(_time) == ("precision",)
+
+
+def test_positional_args_for_timedelta_returns_precision() -> None:
+    assert _positional_args_for_type(_timedelta) == ("precision",)
+
+
+def test_positional_args_for_datetime_returns_precision() -> None:
+    assert _positional_args_for_type(_datetime) == ("precision",)
+
+
+def test_positional_args_for_datetimetz_returns_precision() -> None:
+    assert _positional_args_for_type(_DateTimeTz) == ("precision",)
+
+
+def test_positional_args_for_vec_returns_dimensions() -> None:
+    assert _positional_args_for_type(Vec) == ("dimensions",)
+
+
+def test_positional_args_for_uuid7_returns_uuid_auto() -> None:
+    assert _positional_args_for_type(_uuid7) == ("uuid_auto",)
+
+
+def test_positional_args_for_uuid4_returns_uuid_auto() -> None:
+    assert _positional_args_for_type(_uuid4) == ("uuid_auto",)
+
+
+def test_positional_args_for_ulid_returns_uuid_auto() -> None:
+    assert _positional_args_for_type(_ulid) == ("uuid_auto",)
+
+
+def test_positional_args_for_unknown_type_returns_empty() -> None:
+    assert _positional_args_for_type(bytes) == ()
+
+
+# ---------------------------------------------------------------------------
+# _serialize_value — Decimal → float
+# ---------------------------------------------------------------------------
+
+from nextorm.fields import _serialize_value  # noqa: E402
+
+
+def test_serialize_decimal_returns_str() -> None:
+    """_serialize_value converts Decimal to str to preserve scale and precision."""
+    val = _Decimal("3.14")
+    result = _serialize_value(val)
+    assert isinstance(result, str)
+    assert result == "3.14"
+
+
+# ---------------------------------------------------------------------------
+# Opt[non-str-type]() without args: nullable is NOT set in _options
+# (nullable for non-str Opt types is handled by EntityMeta, not the marker __init__)
+# The 272→276 branch: Opt[str](default=...) keeps the explicit default unchanged
+# ---------------------------------------------------------------------------
+
+
+def test_opt_non_str_marker_without_args_has_empty_options() -> None:
+    """Opt[int]() with no args: _options is empty (nullable is set by EntityMeta, not marker)."""
+    marker = Opt[int]()
+    # nullable is NOT in _options for non-str Opt types (only EntityMeta sets it)
+    assert "nullable" not in marker._options
+
+
+def test_opt_float_marker_without_args_has_empty_options() -> None:
+    """Opt[float]() with no args: _options is empty (same reasoning as Opt[int])."""
+    marker = Opt[float]()
+    assert "nullable" not in marker._options
+
+
+# ---------------------------------------------------------------------------
+# Opt[str](default=...) with explicit default: should NOT override with "" (line 272→276)
+# ---------------------------------------------------------------------------
+
+
+def test_opt_str_marker_with_explicit_default_keeps_default() -> None:
+    """Opt[str](default='N/A') should not override with '' (fields.py line 272→276)."""
+    marker = Opt[str](default="N/A")
+    assert marker._options.get("default") == "N/A"

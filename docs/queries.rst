@@ -60,6 +60,18 @@ Multiple ``filter()`` arguments are combined with ``AND``.  Chain several
 
    db.select(Product).filter(Product.price > 10).filter(Product.stock > 0)
 
+Keyword equality shortcuts
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``filter()`` also accepts keyword arguments as field-equality shortcuts:
+
+.. code-block:: python
+
+   db.select(User).filter(active=True).fetch_all()
+   db.select(User).filter(User.age >= 18, active=True).fetch_all()
+
+Keyword arguments are ``AND``-ed with any positional conditions.
+
 Lambda predicates
 ~~~~~~~~~~~~~~~~~
 
@@ -85,16 +97,66 @@ Import :func:`~nextorm.generators.select` for a PonyORM-style generator expressi
 .. note::
 
    Generator queries work by decompiling the lambda's bytecode.  Complex
-   Python expressions (function calls, multi-level attribute chains) are not
-   supported; use :meth:`~nextorm.query.QuerySet.filter` instead.
+   Python expressions (function calls) are not supported; use
+   :meth:`~nextorm.query.QuerySet.filter` instead.
+   Multi-level relation traversal (``p.rel.field == value``,
+   ``p.rel1.rel2.field == value``, etc.) is supported and automatically
+   generates the required SQL ``JOIN`` chain.
 
 Ordering
 --------
+
+The primary form uses ``.asc()`` / ``.desc()`` on a column expression:
 
 .. code-block:: python
 
    db.select(User).order_by(User.name.asc())
    db.select(User).order_by(User.age.desc(), User.name.asc())
+
+A bare column expression is also accepted and is auto-wrapped as ``ASC``:
+
+.. code-block:: python
+
+   db.select(User).order_by(User.name)           # ASC
+   db.select(User).order_by(User.name, User.age.desc())  # mixed
+
+A single lambda can be passed instead.  The lambda receives an
+:class:`~nextorm.query.EntityProxy` whose attribute accesses return
+:class:`~nextorm.expr.ColumnExpr` objects — the same proxy used by
+:meth:`~nextorm.query.QuerySet.where`, but here the lambda returns a column
+expression (or ordering item) rather than a boolean predicate:
+
+.. code-block:: python
+
+   db.select(User).order_by(lambda u: u.name)           # ASC (auto-wrapped)
+   db.select(User).order_by(lambda u: u.name.desc())    # DESC
+   db.select(User).order_by(
+       lambda u: (u.active.desc(), u.name.asc())        # multi-column via tuple
+   )
+
+The lambda proxy also supports **chained relation traversal** — each
+intermediate step follows a ``Single`` relation and generates the required
+``JOIN`` automatically:
+
+.. code-block:: python
+
+   # Order cart items by shop slug → product name → SKU
+   # Three JOINs are emitted: cartitem→productvariation, →product, →shop
+   db.select(CartItem).order_by(
+       lambda ci: (
+           ci.product_variation.product.shop.slug,
+           ci.product_variation.product.name,
+           ci.product_variation.sku,
+       )
+   )
+
+   # Two-level chain: order posts by their author's name
+   db.select(Post).order_by(lambda p: p.author.name)
+
+Repeating the same relation in multiple tuple entries is safe — the JOIN is
+de-duplicated automatically.
+
+Each call to ``order_by()`` **replaces** any previous ordering.
 
 Limit and offset
 ----------------

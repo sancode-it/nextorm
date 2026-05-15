@@ -85,6 +85,65 @@ class _PrefetchUnresolvableParent(Entity):
 
 
 # ---------------------------------------------------------------------------
+# Entities for order_by chained-relation tests
+# ---------------------------------------------------------------------------
+
+
+class _ChainTop(Entity):
+    """Leaf-level entity in a 3-level chain used for order_by chaining tests."""
+
+    id: PK[int]
+    slug: Req[str]
+
+
+class _ChainMid(Entity):
+    """Middle entity in a 3-level chain."""
+
+    id: PK[int]
+    name: Req[str]
+    top: Single[_ChainTop]
+
+
+class _ChainLeaf(Entity):
+    """Root entity in a 3-level chain — queried with chained order_by lambdas."""
+
+    id: PK[int]
+    sku: Req[str]
+    mid: Single[_ChainMid]
+    tags: Set["_ChainTag"]  # noqa: UP037  — used to exercise non-SINGLE branch in coverage
+
+
+class _ChainTag(Entity):
+    """Back-ref entity for the Set relation on _ChainLeaf — used for coverage only."""
+
+    id: PK[int]
+    label: Req[str]
+    leaf: Single[_ChainLeaf]
+
+
+class _ChainO2OBase(Entity):
+    """Base entity in an O2O chain — used to exercise the relation-PK branch."""
+
+    id: PK[int]
+    slug: Req[str]
+
+
+class _ChainO2OChild(Entity):
+    """O2O child whose PK IS a relation (PK[_ChainO2OBase])."""
+
+    base: PK[_ChainO2OBase]
+    note: Req[str]
+
+
+class _ChainO2OLeaf(Entity):
+    """Entity with a Single[_ChainO2OChild] — used to trigger the relation-PK branch."""
+
+    id: PK[int]
+    sku: Req[str]
+    child: Single[_ChainO2OChild]
+
+
+# ---------------------------------------------------------------------------
 # Lifecycle hook tracker
 # ---------------------------------------------------------------------------
 
@@ -540,6 +599,19 @@ def test_filter_multiple_conditions_anded(seeded_db: Database) -> None:
     assert len(results) == 2
 
 
+def test_filter_kwargs_equality(seeded_db: Database) -> None:
+    """filter(field=value) applies a keyword equality condition."""
+    results = seeded_db.select(Product).filter(name="Widget").fetch_all()
+    assert len(results) == 1
+    assert results[0].name == "Widget"
+
+
+def test_filter_kwargs_mixed_with_conditions(seeded_db: Database) -> None:
+    """filter() accepts both SqlNode conditions and **kwargs simultaneously."""
+    results = seeded_db.select(Product).filter(Product.price < 100.0, in_stock=True).fetch_all()
+    assert all(r.price < 100.0 and r.in_stock for r in results)
+
+
 def test_filter_chained_is_independent(seeded_db: Database) -> None:
     """Chained filter() calls combine conditions with AND."""
     results = (
@@ -622,6 +694,155 @@ def test_order_by_multiple_columns(seeded_db: Database) -> None:
         seeded_db.select(Product).order_by(Product.in_stock.desc(), Product.price.asc()).fetch_all()
     )
     assert len(results) == 3
+
+
+def test_order_by_bare_column_expr_asc(seeded_db: Database) -> None:
+    """Bare ColumnExpr (no .asc()/.desc()) is auto-wrapped as ASC."""
+    results = seeded_db.select(Product).order_by(Product.price).fetch_all()
+    prices = [r.price for r in results]
+    assert prices == sorted(prices)
+
+
+def test_order_by_bare_column_expr_mixed(seeded_db: Database) -> None:
+    """Mix of bare ColumnExpr (ASC) and explicit OrderItem (DESC)."""
+    results = seeded_db.select(Product).order_by(Product.in_stock, Product.price.desc()).fetch_all()
+    assert len(results) == 3
+    # in_stock=False (0) comes first in ASC order
+    assert not results[0].in_stock
+
+
+def test_order_by_lambda_asc(seeded_db: Database) -> None:
+    """Lambda returning a bare ColumnExpr is auto-wrapped as ASC."""
+    results = seeded_db.select(Product).order_by(lambda p: p.price).fetch_all()
+    prices = [r.price for r in results]
+    assert prices == sorted(prices)
+
+
+def test_order_by_lambda_desc(seeded_db: Database) -> None:
+    """Lambda returning an OrderItem with DESC direction."""
+    results = seeded_db.select(Product).order_by(lambda p: p.price.desc()).fetch_all()
+    prices = [r.price for r in results]
+    assert prices == sorted(prices, reverse=True)
+
+
+def test_order_by_lambda_tuple_multi_column(seeded_db: Database) -> None:
+    """Lambda returning a tuple of OrderItems for multi-column ordering."""
+    results = (
+        seeded_db.select(Product).order_by(lambda p: (p.in_stock.desc(), p.price.asc())).fetch_all()
+    )
+    assert len(results) == 3
+    # in_stock=True (1) should come first in DESC order
+    assert results[0].in_stock
+    assert results[1].in_stock
+    # among in_stock=True rows, price is ascending
+    assert results[0].price < results[1].price
+
+
+def test_order_by_invalid_type_raises(seeded_db: Database) -> None:
+    """Passing an unsupported type to order_by raises TypeError."""
+    with pytest.raises(TypeError, match="order_by\\(\\) expects"):
+        seeded_db.select(Product).order_by("price")  # type: ignore[call-overload]
+
+
+# ---------------------------------------------------------------------------
+# QuerySet.order_by — chained relation traversal (order_by lambda)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def chain_db() -> Generator[Database, None, None]:
+    """Return a seeded Database for the 3-level relation-chain order_by tests."""
+    _db = Database(entities=[_ChainTop, _ChainMid, _ChainLeaf, _ChainTag])
+    _db.bind("sqlite", ":memory:")
+    _db.generate_mapping(create_tables=True)
+    with db_session:
+        top_b = _ChainTop(slug="b-top")
+        top_a = _ChainTop(slug="a-top")
+        mid_2 = _ChainMid(name="mid-2", top=top_b)
+        mid_1 = _ChainMid(name="mid-1", top=top_a)
+        _ChainLeaf(sku="leaf-z", mid=mid_2)
+        _ChainLeaf(sku="leaf-a", mid=mid_1)
+        _ChainLeaf(sku="leaf-m", mid=mid_1)
+    yield _db
+    _db.close()
+
+
+def test_order_by_lambda_single_hop_relation(chain_db: Database) -> None:
+    """Lambda with one relation hop: order_by(lambda x: x.relation.field)."""
+    results = chain_db.select(_ChainLeaf).order_by(lambda leaf: leaf.mid.name).fetch_all()
+    names = [r.mid.name for r in results]
+    assert names == sorted(names)
+
+
+def test_order_by_lambda_two_hop_relation(chain_db: Database) -> None:
+    """Lambda with two relation hops: order_by(lambda x: x.rel1.rel2.field)."""
+    results = chain_db.select(_ChainLeaf).order_by(lambda leaf: leaf.mid.top.slug).fetch_all()
+    slugs = [r.mid.top.slug for r in results]
+    assert slugs == sorted(slugs)
+
+
+def test_order_by_lambda_mixed_chain_and_direct(chain_db: Database) -> None:
+    """Lambda tuple mixing chained relation field and direct field."""
+    results = (
+        chain_db.select(_ChainLeaf).order_by(lambda leaf: (leaf.mid.top.slug, leaf.sku)).fetch_all()
+    )
+    assert len(results) == 3
+    # All rows from slug "a-top" come before "b-top"
+    a_rows = [r for r in results if r.mid.top.slug == "a-top"]
+    b_rows = [r for r in results if r.mid.top.slug == "b-top"]
+    assert results.index(a_rows[0]) < results.index(b_rows[0])
+    # Within the "a-top" group, sku is ascending
+    a_skus = [r.sku for r in a_rows]
+    assert a_skus == sorted(a_skus)
+
+
+def test_order_by_lambda_dedup_joins(chain_db: Database) -> None:
+    """When the same relation is accessed in two tuple branches, the JOIN is added once."""
+    # Both leaf.mid.top.slug and leaf.mid.name traverse leaf→mid; the second
+    # occurrence must be de-duplicated so only one JOIN on chainmid is emitted.
+    results = (
+        chain_db.select(_ChainLeaf)
+        .order_by(lambda leaf: (leaf.mid.top.slug, leaf.mid.name))
+        .fetch_all()
+    )
+    assert len(results) == 3
+    slugs = [r.mid.top.slug for r in results]
+    assert slugs == sorted(slugs)
+
+
+def test_order_by_lambda_set_relation_falls_through(chain_db: Database) -> None:
+    """Accessing a Set relation in an order_by lambda is treated as a plain field name."""
+    from nextorm.expr import ColumnExpr
+    from nextorm.query import _OrderAccumulator, _resolve_order_attr
+
+    accum = _OrderAccumulator()
+    # 'tags' is a Set[_ChainTag] on _ChainLeaf — not a SINGLE relation
+    result = _resolve_order_attr(_ChainLeaf, "chainleaf", "tags", accum)
+    assert isinstance(result, ColumnExpr)
+    assert result.field_name == "tags"
+    assert not accum.joins  # Set relations do not generate JOINs
+
+
+def test_order_by_lambda_relation_pk_target(tmp_path: Any) -> None:
+    """_resolve_order_attr builds the JOIN correctly for an O2O child with a relation-PK."""
+    from nextorm.expr import ColumnExpr
+    from nextorm.query import _OrderAccumulator, _resolve_order_attr
+    from nextorm.sql.nodes import BinOp
+
+    accum = _OrderAccumulator()
+    # _ChainO2OLeaf.child is Single[_ChainO2OChild], whose PK is PK[_ChainO2OBase]
+    # (a relation-PK).  The pk_attr "base" is in _relations_, not _fields_.
+    result = _resolve_order_attr(_ChainO2OLeaf, "chainO2oleaf", "child", accum)
+    # Should return a proxy for _ChainO2OChild and have registered the JOIN
+    assert len(accum.joins) == 1
+    _join_type, _table_name, _alias, on_node = accum.joins[0]
+    assert _join_type == "INNER"
+    assert _table_name == _ChainO2OChild._table_name_
+    assert isinstance(on_node, BinOp)
+    # Continue chaining: .note should be a plain ColumnExpr on the child table
+    child_result = result.note
+    assert isinstance(child_result, ColumnExpr)
+    assert child_result.field_name == "note"
 
 
 # ---------------------------------------------------------------------------
@@ -1733,7 +1954,7 @@ def test_queryset_getitem_wrong_type_raises(seeded_db: Database) -> None:
 
     qs = seeded_db.select(Product)
     with _pytest.raises(TypeError, match="int or slice"):
-        qs["key"]  # type: ignore[index]
+        qs["key"]  # type: ignore[call-overload]
 
 
 def test_queryset_getitem_open_slice(seeded_db: Database) -> None:
@@ -1744,3 +1965,247 @@ def test_queryset_getitem_open_slice(seeded_db: Database) -> None:
     assert isinstance(results, list)
     all_results = qs.fetch_all()
     assert len(results) == len(all_results) - 1
+
+
+def test_queryset_getitem_full_slice_preserves_offset_and_limit(
+    seeded_db: Database,
+) -> None:
+    """qs.offset(n).limit(m)[:] preserves the existing offset and limit."""
+    qs = seeded_db.select(Product).order_by(Product.id.asc())
+    all_results = qs.fetch_all()
+    # Fetch the second result via .offset(1).limit(1)[:]
+    result = qs.offset(1).limit(1)[:]
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert result[0].id == all_results[1].id
+
+
+# ---------------------------------------------------------------------------
+# _build_column_map_from_names: non-owning O2O (line 137) and composite FK (lines 141-145)
+# _build_explicit_column_map: non-owning O2O (line 217) and composite FK (lines 220-225)
+# ---------------------------------------------------------------------------
+
+
+class _O2OQOwner(Entity):
+    """Non-owning side of an O2O for raw() column map tests."""
+
+    _table_ = "_o2oq_owner"
+    name: Req[str]
+    partner: Single["_O2OQPartner"] = Single(nullable=True)  # noqa: UP037
+
+
+class _O2OQPartner(Entity):
+    """Owning side: relation-based PK → FK column on partner's table."""
+
+    _table_ = "_o2oq_partner"
+    host: PK[_O2OQOwner]  # relation-based PK
+    value: Req[str]
+
+
+class _LazyO2OSelf(Entity):
+    """Owner entity that will have a non-owning O2O when _LazyO2OSelfPartner is defined."""
+
+    _table_ = "_lazy_o2o_self"
+    name: Req[str]
+    detail: Req[str] = Req(lazy=True)  # lazy field → triggers _build_explicit_column_map
+    partner: Single["_LazyO2OSelfPartner"] = Single(nullable=True)  # noqa: UP037 — non-owning O2O
+
+
+class _LazyO2OSelfPartner(Entity):
+    """Partner entity whose PK is a relation back to _LazyO2OSelf."""
+
+    _table_ = "_lazy_o2o_self_partner"
+    host: PK[_LazyO2OSelf]  # relation-based PK → FK lives on THIS table, not on _LazyO2OSelf
+    value: Req[str]
+
+
+from tests.test_composite_pk import Enrollment as _EnrollmentQ  # noqa: E402
+from tests.test_composite_pk import GradeNote as _GradeNote  # noqa: E402
+
+
+class _LazyGradeNote(Entity):
+    """Lazy-field entity with a composite FK relation (for _build_explicit_column_map)."""
+
+    _table_ = "_lazy_grade_note"
+    note: Req[str]
+    detail: Req[str] = Req(lazy=True)  # lazy field → triggers _build_explicit_column_map
+    enrollment: Single[_EnrollmentQ]  # composite FK → lines 220-225
+
+
+@pytest.fixture()
+def raw_test_db() -> Database:
+    """Database with O2O entities and composite FK for raw() tests."""
+    from nextorm.session import db_session as _dbs
+
+    db = Database(
+        entities=[
+            _O2OQOwner,
+            _O2OQPartner,
+            _LazyO2OSelf,
+            _LazyO2OSelfPartner,
+            _EnrollmentQ,
+            _GradeNote,
+            _LazyGradeNote,
+        ]
+    )
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+    with _dbs:
+        owner = _O2OQOwner(name="raw-owner")
+        from nextorm import flush
+
+        flush()
+        partner = _O2OQPartner(value="raw-partner")
+        partner.host = owner
+        flush()
+        enrollment = _EnrollmentQ(student_id=100, course_id=200)
+        flush()
+        note = _GradeNote(note="raw-grade-note")
+        note.enrollment = enrollment
+        flush()
+    return db
+
+
+def test_raw_query_non_owning_o2o_skips_fk_column(raw_test_db: Database) -> None:
+    """raw() on a non-owning O2O entity skips the FK column in column map."""
+    # _O2OQOwner.partner is non-owning: the FK lives on _O2OQPartner.host table.
+    # _build_column_map_from_names for _O2OQOwner should skip partner (continue → line 137)
+    results = raw_test_db.select(_O2OQOwner).raw("SELECT id, name FROM _o2oq_owner")
+    assert len(results) >= 1
+    assert results[0].name == "raw-owner"
+    raw_test_db.close()
+
+
+def test_raw_query_composite_fk_encodes_components(raw_test_db: Database) -> None:
+    """raw() on a composite-FK entity encodes FK columns with position info."""
+    # _GradeNote.enrollment → composite FK columns: enrollment_student_id, enrollment_course_id
+    # _build_column_map_from_names for GradeNote → lines 141-145 (composite FK encoding)
+    results = raw_test_db.select(_GradeNote).raw(
+        "SELECT id, note, enrollment_student_id, enrollment_course_id FROM gradenote"
+    )
+    assert len(results) == 1
+    assert results[0].note == "raw-grade-note"
+
+
+def test_lazy_entity_with_non_owning_o2o_explicit_col_map(raw_test_db: Database) -> None:
+    """Lazy entity with non-owning O2O: _build_explicit_column_map skips FK col."""
+    # _LazyO2OSelf has lazy field → _build_explicit_column_map called
+    # partner is non-owning O2O → _is_non_owning_single returns True → continue (line 217)
+    results = raw_test_db.select(_LazyO2OSelf).fetch_all()
+    assert isinstance(results, list)
+
+
+def test_lazy_entity_with_composite_fk_explicit_col_map(raw_test_db: Database) -> None:
+    """Lazy entity with composite FK: _build_explicit_column_map adds FK cols."""
+    # _LazyGradeNote has lazy field → _build_explicit_column_map called
+    # enrollment is composite FK → lines 220-225
+    results = raw_test_db.select(_LazyGradeNote).fetch_all()
+    assert isinstance(results, list)
+    raw_test_db.close()
+
+
+# ---------------------------------------------------------------------------
+# QuerySet._build_select: explicit columns (lazy field) + JOIN
+# ---------------------------------------------------------------------------
+
+
+def test_lazy_entity_explicit_columns_with_join(tmp_path: Any) -> None:
+    """QuerySet for lazy entity + JOIN qualifies explicit columns (covers query.py 1116-1117)."""
+
+    class _LazJParent(Entity):
+        _table_ = "_lazjparent"
+        name: Req[str]
+
+    class _LazJChild(Entity):
+        _table_ = "_lazjchild"
+        text: Req[str]
+        detail: Req[str] = Req(lazy=True)  # lazy field → _explicit_columns is set
+        parent: Single[_LazJParent]
+
+    db = Database(entities=[_LazJParent, _LazJChild])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    p1 = _LazJParent(name="Bravo")
+    db.save(p1)
+    p2 = _LazJParent(name="Alpha")
+    db.save(p2)
+    c1 = _LazJChild(text="child-b", detail="hidden-b")
+    vars(c1)["_parent_id"] = p1.id
+    db.save(c1)
+    c2 = _LazJChild(text="child-a", detail="hidden-a")
+    vars(c2)["_parent_id"] = p2.id
+    db.save(c2)
+
+    # order_by traversing relation → JOIN → explicit columns + JOIN → 1116-1117
+    results = db.select(_LazJChild).order_by(lambda r: r.parent.name).fetch_all()
+    assert len(results) == 2
+    assert results[0].text == "child-a"  # Alpha parent first
+    assert results[1].text == "child-b"  # Bravo parent second
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# QuerySet join deduplication branches
+# ---------------------------------------------------------------------------
+
+
+def test_order_by_same_join_deduplicated_on_chained_order_by(chain_db: Database) -> None:
+    """Second order_by call deduplicates a JOIN already added by the first (covers 574->569)."""
+    # First order_by adds JOIN on _chainmid; second order_by traverses _chainmid + _chaintop.
+    # The dedup in the order_by loop detects the existing _chainmid JOIN and skips it (574->569).
+    results = (
+        chain_db.select(_ChainLeaf)
+        .order_by(lambda leaf: leaf.mid.name)  # adds JOIN on _chainmid
+        .order_by(lambda leaf: leaf.mid.top.slug)  # re-adds _chainmid JOIN → dedup; adds _chaintop
+        .fetch_all()
+    )
+    assert len(results) == 3
+
+
+def test_join_deduplicates_same_join(chain_db: Database) -> None:
+    """Calling join() twice with the same arguments deduplicates the JOIN (covers 624->626)."""
+    from nextorm.sql.nodes import BinOp, ColumnRef  # noqa: PLC0415
+
+    on_cond = BinOp(ColumnRef("mid_id", "_chainleaf"), "=", ColumnRef("id", "_chainmid"))
+    results = (
+        chain_db.select(_ChainLeaf)
+        .join("_chainmid", on_cond)
+        .join("_chainmid", on_cond)  # same join — deduplicated
+        .fetch_all()
+    )
+    assert len(results) == 3
+
+
+# ---------------------------------------------------------------------------
+# QuerySet.where() fallback to proxy-based evaluation on DecompileError
+# ---------------------------------------------------------------------------
+
+
+def test_where_lambda_falls_back_to_proxy_on_decompile_error(seeded_db: Database) -> None:
+    """where() falls back to proxy-based evaluation when _apply_predicate raises DecompileError."""
+    from unittest.mock import patch
+
+    from nextorm.generators import DecompileError
+
+    # Patch _apply_predicate to raise DecompileError, forcing the proxy fallback (lines 521-527)
+    with patch("nextorm.generators._apply_predicate", side_effect=DecompileError("forced")):
+        results = seeded_db.select(Product).where(lambda p: p.price > 5.0).fetch_all()
+
+    assert len(results) > 0
+
+
+def test_where_lambda_uses_proxy_directly_when_entity_cls_is_none(seeded_db: Database) -> None:
+    """where() goes directly to proxy-based eval when table has no entity_cls (covers 518->525)."""
+    import dataclasses
+
+    from nextorm.query import QuerySet
+
+    qs = seeded_db.select(Product)
+    # Create a QS with a table that has entity_cls=None (simulates raw/join-table QS)
+    raw_table = dataclasses.replace(qs._table, entity_cls=None)
+    raw_qs = QuerySet(Product, raw_table, qs._db, qs._builder)
+    # where() should use proxy-based evaluation directly (skips decompilation attempt)
+    filtered = raw_qs.where(lambda p: p.price > 5.0)
+    results = filtered.fetch_all()
+    assert len(results) > 0

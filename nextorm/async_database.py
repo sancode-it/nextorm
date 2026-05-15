@@ -28,7 +28,7 @@ import contextlib
 import sys
 import time
 import typing
-from typing import IO, Any
+from typing import IO, TYPE_CHECKING, Any, cast, overload
 
 from nextorm.database import (
     _DDL_RENDERERS,
@@ -36,8 +36,14 @@ from nextorm.database import (
     _database_registry,
     _get_pk_val,
 )
-from nextorm.debug import QueryStat, _global_stats_lock, _print_sql, global_stats
-from nextorm.entity import _LAZY_SENTINEL, Entity, EntityMeta, _entity_registry
+from nextorm.debug import (
+    QueryStat,
+    _global_stats_lock,
+    _print_sql,
+    _record_async_capture,
+    global_stats,
+)
+from nextorm.entity import _LAZY_SENTINEL, Entity, EntityMeta, _entity_registry, _LazyType
 from nextorm.exceptions import MappingError, OptimisticCheckError
 from nextorm.fields import RelationKind, _generate_ulid, _generate_uuid7, _serialize_value
 from nextorm.providers.base import (
@@ -66,6 +72,11 @@ from nextorm.sql.nodes import (
 )
 
 __all__ = ["AsyncDatabase", "AsyncQuerySet"]
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from nextorm.expr import ColumnExpr as _ColumnExprT
 
 
 class AsyncDatabase:
@@ -240,6 +251,87 @@ class AsyncDatabase:
         with contextlib.suppress(ValueError):
             _database_registry.remove(self)
 
+    async def disconnect(self) -> None:
+        """Close the async connection without full teardown.
+
+        Async counterpart of :meth:`~nextorm.database.Database.disconnect`.
+        The :class:`AsyncDatabase` object remains usable after re-binding.
+
+        Example::
+
+            await db.disconnect()  # release the connection handle
+        """
+        await self.close()
+
+    async def unbind(self) -> None:
+        """Close the connection and clear the provider binding.
+
+        Async counterpart of :meth:`~nextorm.database.Database.unbind`.
+        After calling this you must ``await db.bind(...)`` again before
+        issuing queries.
+        """
+        await self.close()
+        self._provider = None
+        self._connect_args = ()
+        self._connect_kwargs = {}
+        self._renderer = None
+        self._async_provider_instance = None
+        self._builder = None
+        self._connection = None
+        self._schema = {}
+        self._bound = False
+
+    def get_ddl(self) -> list[str]:
+        """Return the DDL statements captured during :meth:`generate_mapping`.
+
+        Async counterpart of :meth:`~nextorm.database.Database.get_ddl`.
+        """
+        return list(getattr(self, "_ddl_statements", []))
+
+    async def migrate(self) -> list[str]:
+        """Apply pending schema changes to the live database.
+
+        Async counterpart of :meth:`~nextorm.database.Database.migrate`.
+
+        Introspects the current database schema, computes the diff against
+        the entity-derived target schema, and executes each pending DDL
+        statement.  Returns the list of SQL statements that were executed.
+        An empty list means the database is already up to date.
+
+        Raises :exc:`RuntimeError` if not bound or if :meth:`generate_mapping`
+        has not been called.
+
+        .. note::
+           Only the ``"sqlite"`` async provider is currently supported.
+           For ``"postgres"`` or ``"mariadb"`` use the sync
+           :meth:`~nextorm.database.Database.migrate`.
+        """
+        from nextorm.schema.diff import diff_schemas  # noqa: PLC0415
+
+        if not self._bound:
+            raise RuntimeError("AsyncDatabase is not bound to a provider. Call await bind() first.")
+        if not self._schema:
+            raise RuntimeError("Schema is empty. Call await generate_mapping() before migrate().")
+        assert self._async_provider_instance is not None
+        assert self._renderer is not None
+        conn = self._ensure_connection()
+
+        if self._provider == "sqlite":
+            from nextorm.schema.introspect import async_introspect_sqlite  # noqa: PLC0415
+
+            current = await async_introspect_sqlite(conn)
+        else:  # pragma: no cover
+            raise RuntimeError(
+                f"AsyncDatabase.migrate() is not yet supported for the {self._provider!r} provider. "
+                "Use the sync Database.migrate() instead."
+            )
+
+        ops = diff_schemas(current, self._schema)
+        stmts = [self._renderer.render(op) for op in ops]
+        if stmts:
+            await self._async_provider_instance.execute_ddl(conn, stmts)
+        return stmts
+
     @property
     def is_bound(self) -> bool:
         """Return ``True`` when :meth:`bind` has been called successfully."""
@@ -293,6 +385,108 @@ class AsyncDatabase:
         """Return a copy of the current table schema (populated by :meth:`generate_mapping`)."""
         return dict(self._schema)
 
+    async def create_tables(self) -> None:
+        """Create tables for all entities if they don't already exist.
+
+        Raises :exc:`RuntimeError` if the database is not bound or mapped.
+
+        Example::
+
+            await db.bind("sqlite", ":memory:")
+            await db.generate_mapping()
+            await db.create_tables()
+        """
+        if not self._schema:
+            raise RuntimeError("Database is not mapped. Call generate_mapping() first.")
+        assert self._renderer is not None
+        assert self._async_provider_instance is not None
+
+        conn = self._ensure_connection()
+        statements = [self._renderer.create_table(table) for table in self._schema.values()]
+        await self._async_provider_instance.execute_ddl(conn, statements)
+
+    async def drop_table(
+        self, table_name: str, *, if_exists: bool = False, with_all_data: bool = False
+    ) -> None:
+        """Drop a specific table from the database.
+
+        Parameters
+        ----------
+        table_name:
+            Name of the table to drop (case-sensitive).
+        if_exists:
+            When ``True``, do not raise an error if the table doesn't exist.
+        with_all_data:
+            When ``False``, raises an error if the table contains data.
+            When ``True``, drops the table regardless of content.
+
+        Raises :exc:`RuntimeError` if the table contains data and
+        ``with_all_data`` is ``False``.
+        """
+        if not self._bound:
+            raise RuntimeError("Database is not bound. Call await bind() first.")
+        assert self._renderer is not None
+        assert self._async_provider_instance is not None
+
+        conn = self._ensure_connection()
+        if not with_all_data:
+            try:
+                rows = await self._execute(f"SELECT 1 FROM {table_name} LIMIT 1", [])
+                if rows:
+                    raise RuntimeError(
+                        f"Table {table_name} is not empty. "
+                        f"Set with_all_data=True to drop table with data."
+                    )
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+
+        statement = self._renderer.drop_table(table_name) if if_exists else f"DROP TABLE {table_name}"
+        await self._async_provider_instance.execute_ddl(conn, [statement])
+
+    async def drop_all_tables(self, *, with_all_data: bool = False) -> None:
+        """Drop all tables associated with this database.
+
+        Parameters
+        ----------
+        with_all_data:
+            When ``False``, raises an error if any table contains data.
+            When ``True``, drops all tables regardless of content.
+
+        Raises :exc:`RuntimeError` if a table contains data and
+        ``with_all_data`` is ``False``.
+
+        Example::
+
+            await db.drop_all_tables(with_all_data=True)
+        """
+        if not self._schema:
+            raise RuntimeError("Database is not mapped. Call generate_mapping() first.")
+        assert self._renderer is not None
+        assert self._async_provider_instance is not None
+
+        conn = self._ensure_connection()
+        if not with_all_data:
+            for table_name in self._schema:
+                try:
+                    rows = await self._execute(f"SELECT 1 FROM {table_name} LIMIT 1", [])
+                    if rows:
+                        raise RuntimeError(
+                            f"Table {table_name} is not empty. "
+                            f"Set with_all_data=True to drop tables with data."
+                        )
+                except RuntimeError:
+                    raise
+                except Exception:
+                    pass
+
+        statements = [
+            self._renderer.drop_table(table_name)
+            for table_name in reversed(list(self._schema.keys()))
+        ]
+        await self._async_provider_instance.execute_ddl(conn, statements)
+
     # ------------------------------------------------------------------
     # Relation validation (mirrors Database._validate_relations)
     # ------------------------------------------------------------------
@@ -301,12 +495,14 @@ class AsyncDatabase:
         entities = self._effective_entities()
         entity_by_name: dict[str, type[Entity]] = {e.__name__.lower(): e for e in entities}
 
-        def _resolve(target: type[Entity] | str | typing.ForwardRef | None) -> type[Entity] | None:
+        def _resolve(
+            target: type[Entity] | str | typing.ForwardRef | _LazyType | None,
+        ) -> type[Entity] | None:
             if target is None:  # pragma: no cover
                 return None
             if isinstance(target, str):  # pragma: no cover
                 return entity_by_name.get(target.lower())
-            if isinstance(target, typing.ForwardRef):
+            if isinstance(target, (typing.ForwardRef, _LazyType)):
                 return entity_by_name.get(target.__forward_arg__.lower())
             return target
 
@@ -385,10 +581,38 @@ class AsyncDatabase:
         table = self._schema[entity_cls._table_name_]
         pk_val = _get_pk_val(entity)
 
+        # For composite PKs or user-supplied single PKs, use _dbvals_ presence to
+        # distinguish new (not-yet-inserted) from existing.  We cannot use _db_
+        # because Entity.__init__ sets _db_ immediately when created inside a
+        # db_session (before the first actual DB write).
+        # Even for auto-increment PKs, if the user manually set the PK, we need to
+        # check _dbvals_ to know whether to INSERT or UPDATE.
+        is_new = pk_val is None
+        if not is_new:
+            # Check _dbvals_ to distinguish new from existing for all cases:
+            # - Composite PKs (user supplies all values)
+            # - Single non-auto PKs (user supplies the value)
+            # - Single auto PKs with user-set values (also need to INSERT, not UPDATE)
+            if entity_cls._pk_field_ is None:
+                # Composite PK: check _dbvals_ to know if this is a new entity
+                is_new = "_dbvals_" not in vars(entity)
+            else:
+                # Single-field PK: check _dbvals_ for both auto and non-auto PKs
+                # because user might manually set an auto PK
+                is_new = "_dbvals_" not in vars(entity)
+
         try:
-            if pk_val is None:
+            if is_new:
                 entity.before_insert()
-                await self._do_insert(entity, entity_cls, table)
+                # If user manually set an auto PK, include it in the INSERT statement
+                include_auto_pk = pk_val is not None and entity_cls._pk_field_ is not None
+                pk_field = (
+                    entity_cls._fields_.get(entity_cls._pk_field_)
+                    if entity_cls._pk_field_ is not None
+                    else None
+                )
+                include_auto_pk = include_auto_pk and (pk_field is not None and pk_field.spec.auto)
+                await self._do_insert(entity, entity_cls, table, include_auto_pk=include_auto_pk)
                 entity.after_insert()
             else:
                 entity.before_update()
@@ -546,10 +770,15 @@ class AsyncDatabase:
     async def execute(self, sql: str, *args: Any) -> int:
         """Execute arbitrary SQL asynchronously and return the number of affected rows.
 
+        Pending entity inserts and updates in the current
+        :func:`~nextorm.session.db_session` are flushed before the statement
+        is executed, so that the SQL operates on up-to-date data.
+
         *args* are bound as positional parameters::
 
             await db.execute("DELETE FROM session WHERE expires_at < ?", cutoff)
         """
+        await self.aflush()
         return await self._execute_dml(sql, list(args))
 
     async def select_raw(self, sql: str, *args: Any) -> list[dict[str, Any]]:
@@ -574,8 +803,38 @@ class AsyncDatabase:
         return [dict(zip(col_names, row, strict=False)) for row in rows]
 
     async def _execute(self, sql: str, params: list[Any]) -> list[tuple[Any, ...]]:
+        if not getattr(
+            self, "_flushing_", False
+        ):  # pragma: no branch — async before_insert is sync; recursive _execute is unreachable
+            from nextorm.session import _get_session_stack  # noqa: PLC0415
+
+            cache = _get_session_stack().current
+            if cache is not None and (cache.objects_to_save or cache.dirty_objects):
+                saving_set: set[int] = getattr(self, "_saving_", None) or set()
+                pending = [
+                    e
+                    for e in cache.objects_to_save
+                    if vars(e).get("_db_") is self
+                    and "_dbvals_" not in vars(e)
+                    and id(e) not in saving_set
+                ]
+                dirty = [
+                    e
+                    for e in cache.dirty_objects
+                    if vars(e).get("_db_") is self and id(e) not in saving_set
+                ]
+                if pending or dirty:
+                    self._flushing_: bool = True
+                    try:
+                        for entity in pending:
+                            await self.asave(entity)
+                        for entity in dirty:
+                            await self.asave(entity)
+                    finally:
+                        self._flushing_ = False
         self._last_sql = sql
         _print_sql(sql, params)
+        _record_async_capture(sql, params)
         conn = self._ensure_connection()
         cur = await conn.cursor()
         t0 = time.perf_counter()
@@ -590,6 +849,7 @@ class AsyncDatabase:
         """Execute *sql* and return ``(rows, column_names)``."""
         self._last_sql = sql
         _print_sql(sql, params)
+        _record_async_capture(sql, params)
         conn = self._ensure_connection()
         cur = await conn.cursor()
         t0 = time.perf_counter()
@@ -602,6 +862,7 @@ class AsyncDatabase:
     async def _execute_dml(self, sql: str, params: list[Any]) -> int:
         self._last_sql = sql
         _print_sql(sql, params)
+        _record_async_capture(sql, params)
         conn = self._ensure_connection()
         cur = await conn.cursor()
         t0 = time.perf_counter()
@@ -617,6 +878,7 @@ class AsyncDatabase:
     async def _execute_insert(self, sql: str, params: list[Any]) -> int | None:
         self._last_sql = sql
         _print_sql(sql, params)
+        _record_async_capture(sql, params)
         conn = self._ensure_connection()
         cur = await conn.cursor()
         t0 = time.perf_counter()
@@ -708,12 +970,40 @@ class AsyncDatabase:
             if val is None and issubclass(fi.py_type, str) and not fi.spec.nullable:
                 val = ""
             cols_and_vals.append((fi.spec.column or fi.name, _serialize_value(val)))
-        # Also persist FK values from Single relations (owning side)
+        # Also persist FK values from Single relations (owning side).
+        # Skip FK columns that don't exist in the table (non-owning side of O2O back-refs).
+        table_col_names = table.column_names()
         for ri in entity_cls._relations_.values():
             if ri.spec.kind == RelationKind.SINGLE:
-                fk_col = ri.spec.column or f"{ri.name}_id"
+                # First check for explicit FK value set via _<name>_id
                 fk_val = entity.__dict__.get(f"_{ri.name}_id")
-                cols_and_vals.append((fk_col, fk_val))
+                # If not found, try to extract from the related entity
+                if fk_val is None:
+                    related_entity = entity.__dict__.get(f"_{ri.name}_obj")
+                    if related_entity is not None and isinstance(related_entity, Entity):
+                        from nextorm.database import _get_pk_val  # noqa: PLC0415
+
+                        fk_val = _get_pk_val(related_entity)
+                if isinstance(fk_val, tuple):
+                    # Composite PK FK — expand to multiple column entries
+                    from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+
+                    fk_col_names = ri.spec.columns or _derive_composite_fk_cols(
+                        ri.name, ri.spec.target
+                    )
+                    _fk_tuple = cast("tuple[Any, ...]", fk_val)  # type: ignore[redundant-cast]
+                    for col_name, val in zip(fk_col_names, _fk_tuple, strict=False):
+                        if col_name in table_col_names:  # pragma: no branch
+                            cols_and_vals.append((col_name, val))
+                else:
+                    fk_col = (
+                        (ri.spec.columns[0] if ri.spec.columns else None)
+                        or ri.spec.column
+                        or f"{ri.name}_id"
+                    )
+                    if fk_col not in table_col_names:
+                        continue
+                    cols_and_vals.append((fk_col, fk_val))
         # STI: inject the discriminator column value for child entities
         disc_val = entity_cls._discriminator_val_
         if disc_val is not None and entity_cls._sti_parent_ is not None:
@@ -757,7 +1047,26 @@ class AsyncDatabase:
                 dbvals[col] = getattr(entity, fi.name, None)
         for ri in entity_cls._relations_.values():
             if ri.spec.kind == RelationKind.SINGLE:
-                dbvals[ri.spec.column or f"{ri.name}_id"] = vars(entity).get(f"_{ri.name}_id")
+                fk_val = vars(entity).get(f"_{ri.name}_id")
+                if isinstance(fk_val, tuple):
+                    from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+
+                    fk_col_names = ri.spec.columns or _derive_composite_fk_cols(
+                        ri.name, ri.spec.target
+                    )
+                    _fk_tuple2 = cast("tuple[Any, ...]", fk_val)  # type: ignore[redundant-cast]
+                    for col_name, val in zip(fk_col_names, _fk_tuple2, strict=False):
+                        if col_name in table_col_names:  # pragma: no branch
+                            dbvals[col_name] = val
+                else:
+                    fk_col = (
+                        (ri.spec.columns[0] if ri.spec.columns else None)
+                        or ri.spec.column
+                        or f"{ri.name}_id"
+                    )
+                    if fk_col not in table_col_names:
+                        continue
+                    dbvals[fk_col] = fk_val
         vars(entity)["_dbvals_"] = dbvals
         if "_read_cols_" not in vars(entity):  # pragma: no branch
             vars(entity)["_read_cols_"] = set()
@@ -781,13 +1090,38 @@ class AsyncDatabase:
             if not fi.spec.primary_key and not fi.spec.volatile
         ]
         pk_rel_names = {f for f in entity_cls._pk_fields_ if f not in entity_cls._fields_}
+        table_col_names = table.column_names()
         for ri in entity_cls._relations_.values():
-            if (
-                ri.spec.kind == RelationKind.SINGLE and ri.name not in pk_rel_names
-            ):  # pragma: no branch  # noqa: E501
-                fk_col = ri.spec.column or f"{ri.name}_id"
+            if ri.spec.kind == RelationKind.SINGLE and ri.name not in pk_rel_names:
+                # First check for explicit FK value set via _<name>_id
                 fk_val = entity.__dict__.get(f"_{ri.name}_id")
-                assignments.append((fk_col, Param(value=fk_val)))
+                # If not found, try to extract from the related entity
+                if fk_val is None:
+                    related_entity = entity.__dict__.get(f"_{ri.name}_obj")
+                    if related_entity is not None and isinstance(related_entity, Entity):
+                        from nextorm.database import _get_pk_val  # noqa: PLC0415
+
+                        fk_val = _get_pk_val(related_entity)
+                if isinstance(fk_val, tuple):
+                    # Composite PK FK — expand to multiple column entries
+                    from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+
+                    fk_col_names = ri.spec.columns or _derive_composite_fk_cols(
+                        ri.name, ri.spec.target
+                    )
+                    _fk_tuple = cast("tuple[Any, ...]", fk_val)  # type: ignore[redundant-cast]
+                    for col_name, val in zip(fk_col_names, _fk_tuple, strict=False):
+                        if col_name in table_col_names:  # pragma: no branch
+                            assignments.append((col_name, Param(value=val)))
+                else:
+                    fk_col = (
+                        (ri.spec.columns[0] if ri.spec.columns else None)
+                        or ri.spec.column
+                        or f"{ri.name}_id"
+                    )
+                    if fk_col not in table_col_names:
+                        continue
+                    assignments.append((fk_col, Param(value=fk_val)))
         # Option A — per-field optimistic concurrency check (async path).
         # Only columns in _dbvals_ (non-PK, non-volatile) are eligible.
         where = _build_pk_where(entity_cls, pk_val)
@@ -832,7 +1166,7 @@ class AsyncDatabase:
 # ---------------------------------------------------------------------------
 
 
-class AsyncQuerySet[T: Entity]:
+class AsyncQuerySet[ET: Entity]:
     """Async counterpart to :class:`~nextorm.query.QuerySet`.
 
     All terminal methods (``fetch_all``, ``fetch_one``, etc.) are coroutines.
@@ -840,7 +1174,7 @@ class AsyncQuerySet[T: Entity]:
 
     def __init__(
         self,
-        entity_class: type[T],
+        entity_class: type[ET],
         table: Table,
         db: AsyncDatabase,
         builder: SQLBuilder,
@@ -862,6 +1196,7 @@ class AsyncQuerySet[T: Entity]:
         self._lazy_field_names: frozenset[str] = frozenset(
             fi.name for fi in entity_class._fields_.values() if fi.spec.lazy
         )
+        self._prefetches: tuple[str, ...] = ()
         self._explicit_columns: tuple[ColumnRef, ...] | None
         self._column_map: list[str | None]
         if self._lazy_field_names:
@@ -871,8 +1206,8 @@ class AsyncQuerySet[T: Entity]:
             self._explicit_columns = None
             self._column_map = _build_column_map(entity_class, table)
 
-    def _clone(self) -> AsyncQuerySet[T]:
-        q: AsyncQuerySet[T] = object.__new__(type(self))
+    def _clone(self) -> AsyncQuerySet[ET]:
+        q: AsyncQuerySet[ET] = object.__new__(type(self))
         q._entity_class = self._entity_class
         q._table = self._table
         q._db = self._db
@@ -888,32 +1223,81 @@ class AsyncQuerySet[T: Entity]:
         q._lazy_field_names = self._lazy_field_names
         q._explicit_columns = self._explicit_columns
         q._column_map = self._column_map
+        q._prefetches = self._prefetches
         return q
 
     # ------------------------------------------------------------------
     # Chainable modifiers
     # ------------------------------------------------------------------
 
-    def filter(self, *conditions: SqlNode) -> AsyncQuerySet[T]:
-        """Async counterpart of :meth:`~nextorm.query.QuerySet.filter`."""
+    def filter(self, *conditions: SqlNode, **kwargs: Any) -> AsyncQuerySet[ET]:
+        """Async counterpart of :meth:`~nextorm.query.QuerySet.filter`.
+
+        Keyword arguments are treated as equality shortcuts (``field=value``).
+        """
         q = self._clone()
         for cond in conditions:
             q._where = cond if q._where is None else BinOp(q._where, "AND", cond)
+        for field, value in kwargs.items():
+            kw_cond = BinOp(ColumnRef(field), "=", Param(value=value))
+            q._where = kw_cond if q._where is None else BinOp(q._where, "AND", kw_cond)
         return q
 
-    def order_by(self, *items: OrderItem) -> AsyncQuerySet[T]:
-        """Async counterpart of :meth:`~nextorm.query.QuerySet.order_by`."""
+    def where(self, predicate: Callable[[Any], Any]) -> AsyncQuerySet[ET]:
+        """Narrow results using a lambda predicate.
+
+        Async counterpart of :meth:`~nextorm.query.QuerySet.where`.
+        First tries bytecode decompilation (supports M2M containment, bool
+        attribute checks, method calls); falls back to proxy-based evaluation
+        for simple conditions.
+        """
+        from nextorm.generators import DecompileError, _apply_predicate  # noqa: PLC0415
+        from nextorm.query import EntityProxy  # noqa: PLC0415
+
+        entity_cls = getattr(self._table, "entity_cls", None)
+        if entity_cls is not None:  # pragma: no branch
+            try:
+                return _apply_predicate(self, predicate, entity_cls)  # type: ignore[no-any-return]
+            except DecompileError:
+                pass  # fall through to proxy-based approach
+
+        proxy = EntityProxy(self._table.name)
+        cond = predicate(proxy)
+        return self.filter(cond)
+
+    @overload
+    def order_by(
+        self,
+        func: Callable[[Any], _ColumnExprT | OrderItem | tuple[_ColumnExprT | OrderItem, ...]],
+        /,
+    ) -> AsyncQuerySet[ET]: ...
+    @overload
+    def order_by(self, *items: OrderItem | _ColumnExprT) -> AsyncQuerySet[ET]: ...
+    def order_by(self, *items: Any) -> AsyncQuerySet[ET]:
+        """Async counterpart of :meth:`~nextorm.query.QuerySet.order_by`.
+
+        Accepts the same forms as the sync version: ``OrderItem`` / bare
+        :class:`~nextorm.expr.ColumnExpr` values, or a single lambda::
+
+            qs.order_by(lambda u: u.name)
+            qs.order_by(lambda u: (u.age.desc(), u.name.asc()))
+        """
+        from nextorm.query import _normalize_order_items  # noqa: PLC0415
+
         q = self._clone()
-        q._order = tuple(items)
+        order, joins = _normalize_order_items(items, self._table.name, self._entity_class)
+        q._order = order
+        for join_spec in joins:
+            q._joins = (*q._joins, join_spec)
         return q
 
-    def limit(self, n: int) -> AsyncQuerySet[T]:
+    def limit(self, n: int) -> AsyncQuerySet[ET]:
         """Async counterpart of :meth:`~nextorm.query.QuerySet.limit`."""
         q = self._clone()
         q._lim = n
         return q
 
-    def offset(self, n: int) -> AsyncQuerySet[T]:
+    def offset(self, n: int) -> AsyncQuerySet[ET]:
         """Async counterpart of :meth:`~nextorm.query.QuerySet.offset`."""
         q = self._clone()
         q._off = n
@@ -926,7 +1310,7 @@ class AsyncQuerySet[T: Entity]:
         *,
         join_type: str = "INNER",
         alias: str | None = None,
-    ) -> AsyncQuerySet[T]:
+    ) -> AsyncQuerySet[ET]:
         """Async counterpart of :meth:`~nextorm.query.QuerySet.join`."""
         if isinstance(table_or_entity, str):
             table_name = table_or_entity
@@ -937,22 +1321,73 @@ class AsyncQuerySet[T: Entity]:
         return q
 
     # ------------------------------------------------------------------
+    # Prefetch
+    # ------------------------------------------------------------------
+
+    def prefetch(self, *relation_attrs: Any) -> AsyncQuerySet[ET]:
+        """Declare relations to eager-load alongside the main query.
+
+        Async counterpart of :meth:`~nextorm.query.QuerySet.prefetch`.
+
+        After :meth:`fetch_all` executes the main SELECT, one additional query
+        per prefetched relation is issued and the results are attached to the
+        returned entity instances, avoiding the N+1 query problem.
+
+        Parameters
+        ----------
+        \\*relation_attrs:
+            Attribute descriptors from the entity class, e.g. ``Post.tags``.
+            String attribute names are also accepted.
+
+        Example::
+
+            posts = await db.aselect(Post).prefetch(Post.comments).fetch_all()
+            for post in posts:
+                # post.comments is pre-populated — no extra query fired
+                print(post.comments.count())
+        """
+        names: list[str] = []
+        for attr in relation_attrs:
+            if isinstance(attr, str):
+                names.append(attr)
+            else:
+                name = getattr(attr, "name", None)
+                if name is None:
+                    raise ValueError(f"Cannot determine relation name from {attr!r}.")
+                names.append(name)
+        q = self._clone()
+        q._prefetches = (*q._prefetches, *names)
+        return q
+
+    # ------------------------------------------------------------------
     # Terminal methods
     # ------------------------------------------------------------------
 
-    async def fetch_all(self) -> list[T]:
+    async def fetch_all(self) -> list[ET]:
         """Async counterpart of :meth:`~nextorm.query.QuerySet.fetch_all`."""
         stmt = self._build_select()
         sql, params = self._builder.render(stmt)
         rows = await self._db._execute(sql, params)
-        return [self._map_row(row) for row in rows]
+        results = [self._map_row(row) for row in rows]
+        if self._prefetches:
+            await self._do_async_prefetch(results)
+        return results
 
-    async def fetch_one(self) -> T | None:
+    async def fetch_one(self) -> ET | None:
         """Async counterpart of :meth:`~nextorm.query.QuerySet.fetch_one`."""
         stmt = self._build_select(extra_limit=1)
         sql, params = self._builder.render(stmt)
         rows = await self._db._execute(sql, params)
-        return self._map_row(rows[0]) if rows else None
+        if not rows:
+            return None
+        result = self._map_row(rows[0])
+        if self._prefetches:
+            await self._do_async_prefetch([result])
+        return result
+
+    async def first(self) -> ET | None:
+        """Alias for :meth:`fetch_one`."""
+        return await self.fetch_one()
 
     async def count(self) -> int:
         """Async counterpart of :meth:`~nextorm.query.QuerySet.count`."""
@@ -979,7 +1414,7 @@ class AsyncQuerySet[T: Entity]:
         rows = await self._db._execute(sql, params)
         return bool(rows)
 
-    async def get(self) -> T | None:
+    async def get(self) -> ET | None:
         """Async counterpart of :meth:`~nextorm.query.QuerySet.get`."""
         from nextorm.exceptions import MultipleObjectsFoundError  # noqa: PLC0415
 
@@ -995,7 +1430,7 @@ class AsyncQuerySet[T: Entity]:
             )
         return self._map_row(rows[0])
 
-    async def get_or_raise(self) -> T:
+    async def get_or_raise(self) -> ET:
         """Async :meth:`~nextorm.query.QuerySet.get_or_raise`."""
         from nextorm.exceptions import ObjectNotFound  # noqa: PLC0415
 
@@ -1031,43 +1466,35 @@ class AsyncQuerySet[T: Entity]:
         sql, params = self._builder.render(stmt)
         return await self._db._execute_dml(sql, params)
 
-    def distinct(self) -> AsyncQuerySet[T]:
+    def distinct(self) -> AsyncQuerySet[ET]:
         """Enable ``SELECT DISTINCT``."""
         q = self._clone()
         q._distinct = True
         return q
 
-    def without_distinct(self) -> AsyncQuerySet[T]:
+    def without_distinct(self) -> AsyncQuerySet[ET]:
         """Disable ``SELECT DISTINCT`` (reverses a previous :meth:`distinct` call)."""
         q = self._clone()
         q._distinct = False
         return q
 
-    def for_update(self, *, skip_locked: bool = False) -> AsyncQuerySet[T]:
+    def for_update(self, *, skip_locked: bool = False) -> AsyncQuerySet[ET]:
         """Append ``FOR UPDATE [SKIP LOCKED]``."""
         q = self._clone()
         q._for_update = True
         q._for_update_skip_locked = skip_locked
         return q
 
-    def page(self, pagenum: int, pagesize: int = 10) -> AsyncQuerySet[T]:
+    def page(self, pagenum: int, pagesize: int = 10) -> AsyncQuerySet[ET]:
         """Return a page of results (1-based page numbers)."""
         if pagenum < 1:
             raise ValueError("pagenum must be >= 1")
         return self.offset((pagenum - 1) * pagesize).limit(pagesize)
 
-    def random(self, n: int) -> AsyncQuerySet[T]:
+    def random(self, n: int) -> AsyncQuerySet[ET]:
         """Return *n* randomly ordered rows."""
         fname = "RAND" if self._db._provider == "mariadb" else "RANDOM"
         return self.order_by(OrderItem(FunctionCall(fname, ()))).limit(n)
-
-    def where(self, predicate: Any) -> AsyncQuerySet[T]:
-        """Narrow results using a lambda predicate (same semantics as QuerySet.where)."""
-        from nextorm.query import EntityProxy  # noqa: PLC0415
-
-        proxy = EntityProxy(self._table.name)
-        cond = predicate(proxy)
-        return self.filter(cond)
 
     async def _aggregate(self, func: str, attr: str) -> Any:
         fi = self._entity_class._fields_.get(attr)
@@ -1146,7 +1573,7 @@ class AsyncQuerySet[T: Entity]:
         sql, _ = self._builder.render(stmt)
         return sql
 
-    async def ashow(self, width: int = 120, *, file: IO[str] | None = None) -> None:
+    async def show(self, width: int = 120, *, file: IO[str] | None = None) -> None:
         """Async counterpart of :meth:`~nextorm.query.QuerySet.show`.
 
         Fetches all rows asynchronously and renders them as a plain-text
@@ -1191,7 +1618,166 @@ class AsyncQuerySet[T: Entity]:
             print(line, file=out)
         print(sep, file=out)
 
-    async def raw(self, sql: str, params: list[Any] | None = None) -> list[T]:
+    async def _do_async_prefetch(self, results: list[ET]) -> None:
+        """Execute async prefetch queries and attach results to *results*."""
+        if not results:
+            return
+        entity_cls = self._entity_class
+        pk_fields = entity_cls._pk_fields_
+        if not pk_fields:
+            return
+
+        from nextorm.database import _get_pk_val  # noqa: PLC0415
+
+        owner_pks = [_get_pk_val(obj) for obj in results]
+        owner_by_pk: dict[Any, ET] = {
+            _get_pk_val(obj): obj for obj in results if _get_pk_val(obj) is not None
+        }
+        ph = "?" if self._db._provider == "sqlite" else "%s"
+
+        for rel_name in self._prefetches:
+            ri = entity_cls._relations_.get(rel_name)
+            if ri is None:
+                raise ValueError(f"Entity {entity_cls.__name__!r} has no relation {rel_name!r}.")
+
+            from nextorm.collection import RelatedCollection  # noqa: PLC0415
+            from nextorm.fields import RelationKind  # noqa: PLC0415
+
+            if ri.spec.kind != RelationKind.SET:
+                # Batch-load Single (FK) relation
+                from nextorm.entity import _resolve_entity_target  # noqa: PLC0415
+
+                resolved_target = _resolve_entity_target(ri.spec.target)
+                if resolved_target is None:
+                    continue
+                from typing import cast as _cast  # noqa: PLC0415
+
+                target_cls = _cast("type[Entity]", resolved_target)
+                target_pk_field = target_cls._pk_field_
+                if target_pk_field is None:
+                    continue
+                fk_key = f"_{rel_name}_id"
+                obj_key = f"_{rel_name}_obj"
+                fk_ids = [vars(obj).get(fk_key) for obj in results]
+                unique_fk_ids = list(dict.fromkeys(fk for fk in fk_ids if fk is not None))
+                if not unique_fk_ids:
+                    for obj in results:
+                        vars(obj)[obj_key] = None
+                    continue
+                target_pk_col = target_cls._fields_[target_pk_field].spec.column or target_pk_field
+                placeholders = ", ".join(ph for _ in unique_fk_ids)
+                target_rows = await self._db._execute(
+                    f"SELECT * FROM {target_cls._table_name_} "
+                    f"WHERE {target_pk_col} IN ({placeholders})",
+                    unique_fk_ids,
+                )
+                target_qs = self._db.aselect(target_cls)
+                related_by_pk: dict[Any, Any] = {}
+                for trow in target_rows:
+                    tobj = target_qs._map_row(trow)
+                    tpk = getattr(tobj, target_pk_field)
+                    related_by_pk[tpk] = tobj
+                for obj, fk_id in zip(results, fk_ids, strict=True):
+                    vars(obj)[obj_key] = related_by_pk.get(fk_id) if fk_id is not None else None
+                continue
+
+            target = ri.spec.target
+            from nextorm.entity import _matches_entity, _resolve_entity_target  # noqa: PLC0415
+
+            resolved = _resolve_entity_target(target)
+            if resolved is None:
+                continue
+            from typing import cast as _cast2  # noqa: PLC0415
+
+            target_cls = _cast2("type[Entity]", resolved)
+
+            owner_cls = entity_cls
+            is_m2m = any(
+                r.spec.kind == RelationKind.SET and _matches_entity(r.spec.target, owner_cls)
+                for r in target_cls._relations_.values()
+            )
+
+            if is_m2m:
+                join_table = "_".join(sorted([owner_cls._table_name_, target_cls._table_name_]))
+                owner_col = f"{owner_cls._table_name_}_id"
+                inline = ", ".join(ph for _ in owner_pks)
+                join_rows = await self._db._execute(
+                    f"SELECT * FROM {join_table} WHERE {owner_col} IN ({inline})", owner_pks
+                )
+                target_pks_for: dict[Any, list[Any]] = {}
+                for jrow in join_rows:
+                    owner_pk_val = jrow[0] if jrow[0] in owner_by_pk else jrow[1]
+                    target_pk_val = jrow[1] if owner_pk_val == jrow[0] else jrow[0]
+                    target_pks_for.setdefault(owner_pk_val, []).append(target_pk_val)
+
+                if not target_pks_for:
+                    for obj in results:
+                        col_obj: RelatedCollection[Any] = RelatedCollection(obj, ri, self._db)  # type: ignore[arg-type]
+                        col_obj._cache = []
+                        vars(obj)[f"_{rel_name}_col"] = col_obj
+                    continue
+
+                all_target_pks = [pk for pks in target_pks_for.values() for pk in pks]
+                target_pk_field = target_cls._pk_field_
+                assert target_pk_field is not None
+                target_pk_col = target_cls._fields_[target_pk_field].spec.column or target_pk_field
+                all_inline = ", ".join(ph for _ in all_target_pks)
+                target_rows = await self._db._execute(
+                    f"SELECT * FROM {target_cls._table_name_} "
+                    f"WHERE {target_pk_col} IN ({all_inline})",
+                    all_target_pks,
+                )
+                target_qs = self._db.aselect(target_cls)
+                target_by_pk: dict[Any, Any] = {}
+                for trow in target_rows:
+                    tobj = target_qs._map_row(trow)
+                    tpk = getattr(tobj, target_pk_field)
+                    target_by_pk[tpk] = tobj
+
+                for obj in results:
+                    opk = _get_pk_val(obj)
+                    related_objs = [
+                        target_by_pk[tpk]
+                        for tpk in target_pks_for.get(opk, [])
+                        if tpk in target_by_pk
+                    ]
+                    col: RelatedCollection[Any] = RelatedCollection(obj, ri, self._db)  # type: ignore[arg-type]
+                    col._cache = related_objs
+                    vars(obj)[f"_{rel_name}_col"] = col
+            else:
+                # O2M — find back-ref FK column on target
+                back_ref = next(
+                    (
+                        r
+                        for r in target_cls._relations_.values()
+                        if r.spec.kind == RelationKind.SINGLE
+                        and _matches_entity(r.spec.target, entity_cls)
+                    ),
+                    None,
+                )
+                if back_ref is None:
+                    continue
+                fk_col = f"{back_ref.name}_id"
+                inline = ", ".join(ph for _ in owner_pks)
+                target_rows = await self._db._execute(
+                    f"SELECT * FROM {target_cls._table_name_} WHERE {fk_col} IN ({inline})",
+                    owner_pks,
+                )
+                target_qs = self._db.aselect(target_cls)
+                grouped: dict[Any, list[Any]] = {pk: [] for pk in owner_pks}
+                for trow in target_rows:
+                    tobj = target_qs._map_row(trow)
+                    fk_val = vars(tobj).get(f"_{back_ref.name}_id")
+                    if fk_val in grouped:  # pragma: no branch
+                        grouped[fk_val].append(tobj)
+
+                for obj in results:
+                    opk = _get_pk_val(obj)
+                    col2: RelatedCollection[Any] = RelatedCollection(obj, ri, self._db)  # type: ignore[arg-type]
+                    col2._cache = grouped.get(opk, [])
+                    vars(obj)[f"_{rel_name}_col"] = col2
+
+    async def raw(self, sql: str, params: list[Any] | None = None) -> list[ET]:
         """Execute *sql* and map each result row to an entity instance.
 
         Column names in the cursor description are matched to entity fields
@@ -1203,7 +1789,7 @@ class AsyncQuerySet[T: Entity]:
         col_map = _build_column_map_from_names(self._entity_class, col_names)
         return [self._map_raw_row(row, col_map) for row in rows]
 
-    async def raw_one(self, sql: str, params: list[Any] | None = None) -> T | None:
+    async def raw_one(self, sql: str, params: list[Any] | None = None) -> ET | None:
         """Execute *sql* and return the first mapped entity, or ``None``."""
         from nextorm.query import _build_column_map_from_names  # noqa: PLC0415
 
@@ -1221,9 +1807,21 @@ class AsyncQuerySet[T: Entity]:
         lim = self._lim
         if extra_limit is not None:
             lim = extra_limit if self._lim is None else min(self._lim, extra_limit)
-        columns: tuple[Any, ...] = (
-            self._explicit_columns if self._explicit_columns is not None else (Star(),)
-        )
+        # When JOINs are present, qualify each column ref with the main table name to
+        # avoid "ambiguous column name" errors (multiple joined tables may share 'id').
+        if self._explicit_columns is not None:
+            if self._joins:
+                tname = self._table.name
+                columns: tuple[Any, ...] = tuple(
+                    ColumnRef(c.column, tname) if isinstance(c, ColumnRef) and c.table is None else c  # pyright: ignore[reportUnnecessaryIsInstance]
+                    for c in self._explicit_columns
+                )
+            else:
+                columns = self._explicit_columns
+        elif self._joins:
+            columns = (Star(self._table.name),)
+        else:
+            columns = (Star(),)
         return Select(
             columns=columns,
             from_table=self._table.name,
@@ -1237,9 +1835,9 @@ class AsyncQuerySet[T: Entity]:
             for_update_skip_locked=self._for_update_skip_locked,
         )
 
-    def _map_raw_row(self, row: tuple[Any, ...], col_map: list[str | None]) -> T:
+    def _map_raw_row(self, row: tuple[Any, ...], col_map: list[str | None]) -> ET:
         """Hydrate *row* using an explicit *col_map* (no identity-map caching)."""
-        obj: T = object.__new__(self._entity_class)
+        obj: ET = object.__new__(self._entity_class)
         vars(obj)["_db_"] = self._db
         for field_name, value in zip(col_map, row, strict=False):
             if field_name is None:
@@ -1253,17 +1851,29 @@ class AsyncQuerySet[T: Entity]:
         obj.after_load()
         return obj
 
-    def _map_row(self, row: tuple[Any, ...]) -> T:
+    def _map_row(self, row: tuple[Any, ...]) -> ET:
         entity_cls = self._entity_class
-        obj: T = object.__new__(entity_cls)
+        obj: ET = object.__new__(entity_cls)
         vars(obj)["_db_"] = self._db
+        # Intermediate storage for composite FK components keyed by fk_key.
+        _cfk_builders: dict[str, list[Any]] = {}
         for field_name, value in zip(self._column_map, row, strict=False):
             if field_name is None:  # pragma: no cover
                 continue
-            if field_name.startswith("_") and field_name.endswith("_id"):
+            if "\x1f" in field_name:
+                # Composite FK component: "_shop_order_id\x1f0\x1f2"
+                fk_key, idx_str, total_str = field_name.split("\x1f")
+                idx, total = int(idx_str), int(total_str)
+                if fk_key not in _cfk_builders:
+                    _cfk_builders[fk_key] = [None] * total
+                _cfk_builders[fk_key][idx] = value
+            elif field_name.startswith("_") and field_name.endswith("_id"):
                 vars(obj)[field_name] = value
             else:
                 setattr(obj, field_name, value)
+        # Assemble composite FK tuples
+        for fk_key, components in _cfk_builders.items():
+            vars(obj)[fk_key] = tuple(components) if any(c is not None for c in components) else None
         for lname in self._lazy_field_names:
             vars(obj)[f"_field_{lname}"] = _LAZY_SENTINEL
         obj.after_load()
@@ -1274,9 +1884,29 @@ class AsyncQuerySet[T: Entity]:
                 if not fi.spec.primary_key and not fi.spec.volatile and not fi.spec.lazy:
                     col = fi.spec.column or fi.name
                     dbvals[col] = getattr(obj, fi.name, None)
+            table_col_names = self._table.column_names()
             for ri in entity_cls._relations_.values():
                 if ri.spec.kind == RelationKind.SINGLE:
-                    dbvals[ri.spec.column or f"{ri.name}_id"] = vars(obj).get(f"_{ri.name}_id")
+                    fk_val = vars(obj).get(f"_{ri.name}_id")
+                    if isinstance(fk_val, tuple):
+                        from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+
+                        fk_col_names = ri.spec.columns or _derive_composite_fk_cols(
+                            ri.name, ri.spec.target
+                        )
+                        _fk_tuple3 = cast("tuple[Any, ...]", fk_val)  # type: ignore[redundant-cast]
+                        for col_name, val in zip(fk_col_names, _fk_tuple3, strict=False):
+                            if col_name in table_col_names:  # pragma: no branch
+                                dbvals[col_name] = val
+                    else:
+                        fk_col = (
+                            (ri.spec.columns[0] if ri.spec.columns else None)
+                            or ri.spec.column
+                            or f"{ri.name}_id"
+                        )
+                        if fk_col not in table_col_names:
+                            continue
+                        dbvals[fk_col] = fk_val
             vars(obj)["_dbvals_"] = dbvals
             vars(obj)["_read_cols_"] = set()
         return obj

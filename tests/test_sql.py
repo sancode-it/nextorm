@@ -394,7 +394,7 @@ def test_select_inner_join() -> None:
         from_alias="o",
         joins=(("INNER", "user", "u", BinOp(ColumnRef("id", "u"), "=", ColumnRef("user_id", "o"))),),
     )
-    assert sql(node) == "SELECT * FROM order AS o INNER JOIN user AS u ON u.id = o.user_id"
+    assert sql(node) == 'SELECT * FROM "order" AS o INNER JOIN user AS u ON u.id = o.user_id'
 
 
 def test_select_left_join_no_alias() -> None:
@@ -410,7 +410,7 @@ def test_select_left_join_no_alias() -> None:
             ),
         ),
     )
-    assert sql(node) == "SELECT * FROM order LEFT JOIN user ON user.id = order.user_id"
+    assert sql(node) == 'SELECT * FROM "order" LEFT JOIN user ON user.id = "order".user_id'
 
 
 def test_select_multiple_order_by() -> None:
@@ -651,3 +651,26 @@ def test_sql_node_is_raw_sql_instance() -> None:
     assert isinstance(node, RawSql)
     assert node.fragment == "1=1"
     assert node.params == {}
+
+
+# ---------------------------------------------------------------------------
+# FuncCall and ExistsNode emission (sql/builder.py lines 88, 90, 193-195, 198-199)
+# ---------------------------------------------------------------------------
+
+from nextorm.sql.nodes import ExistsNode, FuncCall  # noqa: E402
+
+
+def test_func_call_node_rendered() -> None:
+    """FuncCall node (e.g. UPPER(name)) is rendered via _emit_func_call."""
+    node = FuncCall(func="UPPER", arg=ColumnRef("name"))
+    s, p = render(node)
+    assert s == "UPPER(name)"
+    assert p == []
+
+
+def test_exists_node_rendered() -> None:
+    """ExistsNode is rendered via _emit_exists, including params."""
+    node = ExistsNode(sql="SELECT 1 FROM t WHERE t.x = ?", params=("hello",))
+    s, p = render(node)
+    assert s == "EXISTS (SELECT 1 FROM t WHERE t.x = ?)"
+    assert p == ["hello"]

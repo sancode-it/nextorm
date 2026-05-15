@@ -44,6 +44,8 @@ __all__ = [
     "SqlNode",
     "Param",
     "Literal",
+    "FuncCall",
+    "ExistsNode",
     "ColumnRef",
     "Star",
     "BinOp",
@@ -105,6 +107,35 @@ class Literal:
     """
 
     value: Any  # int | float | str | bool | None
+
+
+@dataclasses.dataclass(frozen=True)
+class FuncCall:
+    """A SQL function call: ``FUNC(arg)``.
+
+    Used for SQL scalar functions such as ``LOWER(col)``, ``UPPER(col)``,
+    ``TRIM(col)``, etc.  Currently only single-argument functions are
+    supported.
+    """
+
+    func: str  # SQL function name, e.g. "LOWER"
+    arg: SqlNode  # the argument expression
+
+
+@dataclasses.dataclass(frozen=True)
+class ExistsNode:
+    """An ``EXISTS (subquery)`` expression.
+
+    Used to implement M2M containment checks (``entity in relation``) and
+    O2M field value checks (``val in relation.field``).
+
+    ``sql`` is the raw subquery SQL string (e.g.
+    ``SELECT 1 FROM join_table WHERE ...``), and ``params`` holds bound
+    parameter values in left-to-right order.
+    """
+
+    sql: str
+    params: tuple[Any, ...]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -410,6 +441,8 @@ def sql(fragment: str, **params: Any) -> RawSql:
 type SqlNode = (  # noqa: UP040
     Param
     | Literal
+    | FuncCall
+    | ExistsNode
     | ColumnRef
     | Star
     | BinOp

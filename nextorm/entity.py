@@ -6,9 +6,21 @@ import contextlib
 import dataclasses
 import enum as _enum_lib
 import inspect
+import sys
 import types
-from collections.abc import Iterator, Sequence  # noqa: TC003
-from typing import TYPE_CHECKING, Any, ClassVar, ForwardRef, Self, cast, overload
+from collections.abc import Callable, Iterator, Sequence  # noqa: TC003
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    ForwardRef,
+    Self,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+    overload,
+)
 
 from nextorm.collection import RelatedCollection
 from nextorm.fields import (
@@ -23,6 +35,7 @@ from nextorm.fields import (
     RelationKind,
     RelationSpec,
     Vec,
+    _positional_args_for_type,
 )
 from nextorm.fields import (
     PK as _PK,
@@ -42,20 +55,25 @@ from nextorm.fields import (
 from nextorm.fields import (
     Single as _Single,
 )
-from nextorm.sql.nodes import BinOp, ColumnRef, Param
+from nextorm.sql.nodes import BinOp, ColumnRef, Param, SqlNode
 
 if TYPE_CHECKING:
-    from nextorm.async_database import AsyncDatabase
+    from nextorm.async_database import AsyncDatabase, AsyncQuerySet
     from nextorm.database import Database
     from nextorm.expr import ColumnExpr
+    from nextorm.query import QuerySet
 
 __all__ = [
     "Entity",
     "EntityMeta",
+    "_LazyType",
     "_resolve_entity_target",
     "_matches_entity",
     "_LAZY_SENTINEL",
     "_find_db_for_entity",
+    "_target_name",
+    "_pk_col_for_field",
+    "_derive_composite_fk_cols",
 ]
 
 # Sentinel stored in instance.__dict__ for lazy fields that haven't been loaded yet.
@@ -226,10 +244,60 @@ class FieldDescriptor[T: OptAttrValue]:
     def __set__(self, obj: Any, value: T) -> None:
         spec = self.spec
         if value is not None and value is not _LAZY_SENTINEL:
+            # datetime coercion: SQLite returns datetime as ISO string without timezone;
+            # convert it back to a datetime object transparently.
+            if isinstance(value, str):
+                import datetime as _dt  # noqa: PLC0415
+                import decimal as _decimal  # noqa: PLC0415
+
+                if issubclass(self._py_type, _dt.datetime):
+                    value = cast("T", _dt.datetime.fromisoformat(value))
+                elif issubclass(self._py_type, _dt.date) and not issubclass(
+                    self._py_type, _dt.datetime
+                ):
+                    value = cast("T", _dt.date.fromisoformat(value))
+                elif issubclass(self._py_type, _decimal.Decimal):
+                    d = _decimal.Decimal(value)
+                    if spec.scale is not None:
+                        d = d.quantize(_decimal.Decimal(10) ** -spec.scale)
+                    value = cast("T", d)
+            # bool coercion: SQLite returns 0/1 for booleans; convert to bool.
+            # Must come before the generic int path to avoid int(True) → True issues.
+            if (
+                not isinstance(value, bool)
+                and isinstance(value, int)
+                and issubclass(self._py_type, bool)
+            ):
+                value = cast("T", bool(value))
+            # int → Decimal coercion: SQLite may return int 0 for 0.0 stored as REAL.
+            if (
+                not isinstance(value, bool)
+                and isinstance(value, int)
+                and not issubclass(self._py_type, bool)
+            ):
+                import decimal as _decimal  # noqa: PLC0415
+
+                if issubclass(self._py_type, _decimal.Decimal):
+                    d = _decimal.Decimal(value)
+                    if spec.scale is not None:
+                        d = d.quantize(_decimal.Decimal(10) ** -spec.scale)
+                    value = cast("T", d)
+            # Decimal coercion: SQLite stores Decimal as TEXT and returns str, or as
+            # REAL and returns float; convert back to Decimal transparently,
+            # preserving declared scale.
+            if isinstance(value, float):
+                import decimal as _decimal  # noqa: PLC0415
+
+                if issubclass(self._py_type, _decimal.Decimal):
+                    d = _decimal.Decimal(str(value))
+                    if spec.scale is not None:
+                        d = d.quantize(_decimal.Decimal(10) ** -spec.scale)
+                    value = cast("T", d)
             # enum coercion: convert raw DB primitives (str / int) to the declared Enum type
-            if issubclass(self._py_type, _enum_lib.Enum) and not isinstance(value, self._py_type):
+            is_enum = isinstance(self._py_type, type) and issubclass(self._py_type, _enum_lib.Enum)  # noqa: E731 # pyright: ignore[reportUnnecessaryIsInstance]
+            if is_enum and not isinstance(value, self._py_type):
                 raw = value.value if isinstance(value, _enum_lib.Enum) else value
-                value = self._py_type(raw)
+                value = self._py_type(raw)  # type: ignore[misc,call-arg,arg-type]
             # autostrip: strip whitespace from string values
             if spec.autostrip and isinstance(value, str):
                 value = cast("T", value.strip())
@@ -337,6 +405,10 @@ class SingleDescriptor:
         # Try FK id → lazy load
         fk_id = obj.__dict__.get(self._fk_key)
         if fk_id is None:
+            # FK key absent (never set) on a DB-loaded entity → non-owning O2O back-ref.
+            # The FK lives on the target table; do a reverse lookup.
+            if self._fk_key not in vars(obj) and "_dbvals_" in vars(obj):
+                return self._reverse_o2o_lookup(obj)
             return None
         db = obj.__dict__.get("_db_")
         if db is None:
@@ -353,11 +425,67 @@ class SingleDescriptor:
             )
         pk_fields_target = entity_cls._pk_fields_
         assert pk_fields_target, f"Target entity {entity_cls.__name__!r} has no primary key"
-        pk_field = pk_fields_target[0]
-        pk_col = entity_cls._fields_[pk_field].spec.column or pk_field
 
-        cond = BinOp(ColumnRef(pk_col), "=", Param(value=fk_id))
+        if isinstance(fk_id, tuple):
+            # Composite PK — build a compound WHERE clause using _build_pk_where
+            from nextorm.database import _build_pk_where  # noqa: PLC0415
+
+            cond = _build_pk_where(cast("type", entity_cls), fk_id)
+        else:
+            pk_field = pk_fields_target[0]
+            # The PK field may be a relation field (e.g. user: PK[User]).
+            if pk_field in entity_cls._fields_:
+                pk_col = entity_cls._fields_[pk_field].spec.column or pk_field
+            else:
+                # Relation-based PK: column is <field>_id
+                rel_spec = entity_cls._relations_[pk_field].spec
+                pk_col = rel_spec.column or f"{pk_field}_id"
+            cond = BinOp(ColumnRef(pk_col), "=", Param(value=fk_id))
         result = db.select(entity_cls).filter(cond).fetch_one()
+        obj.__dict__[self._obj_key] = result
+        return result
+
+    def _reverse_o2o_lookup(self, obj: Any) -> Any:
+        """Reverse lookup for the non-owning back-reference side of a O2O relation.
+
+        When this ``Single`` descriptor has no FK column on the declaring
+        entity's table (e.g. ``User.user_config`` where the FK lives on the
+        ``UserConfig`` table), query the target table using the reverse FK.
+        """
+        db = obj.__dict__.get("_db_")
+        if db is None:
+            return None
+        target_spec = self.ri.spec.target
+        target_cls = _resolve_entity_target(target_spec)
+        if target_cls is None:
+            return None
+
+        # Locate the reverse relation on the target entity
+        reverse_name = getattr(self.ri.spec, "reverse", None)
+        rev_ri: Any = None
+        rev_fk_col: str | None = None
+        if reverse_name is not None:
+            rev_ri = target_cls._relations_.get(reverse_name)
+            if rev_ri is not None and rev_ri.spec.kind == RelationKind.SINGLE:
+                rev_fk_col = rev_ri.spec.column or f"{reverse_name}_id"
+        if rev_ri is None:
+            # Search the target for a Single relation pointing back at this entity
+            entity_cls: type[Any] = type(obj)  # pyright: ignore[reportUnknownVariableType]
+            for r in target_cls._relations_.values():
+                if r.spec.kind == RelationKind.SINGLE and _matches_entity(r.spec.target, entity_cls):
+                    rev_ri = r
+                    rev_fk_col = r.spec.column or f"{r.name}_id"
+                    break
+        if rev_ri is None or rev_fk_col is None:
+            return None
+
+        from nextorm.database import _get_pk_val  # noqa: PLC0415
+
+        pk_val = _get_pk_val(obj)
+        if pk_val is None:
+            return None
+        cond = BinOp(ColumnRef(rev_fk_col), "=", Param(value=pk_val))
+        result = db.select(target_cls).filter(cond).fetch_one()
         obj.__dict__[self._obj_key] = result
         return result
 
@@ -369,12 +497,34 @@ class SingleDescriptor:
             # Direct FK id assignment (used during row mapping)
             obj.__dict__[self._fk_key] = value
             obj.__dict__.pop(self._obj_key, None)
+        elif isinstance(value, str):
+            # Direct FK assignment for string-typed PKs (e.g. Country.code: PK[str])
+            obj.__dict__[self._fk_key] = value
+            obj.__dict__.pop(self._obj_key, None)
         else:
             # Related entity instance — also cache the FK id
             obj.__dict__[self._obj_key] = value
             value_cls = cast("EntityMeta", type(value))
             pk_fields = value_cls._pk_fields_
-            pk = getattr(value, pk_fields[0]) if pk_fields else None
+            if not pk_fields:  # pragma: no cover — auto-pk injection ensures non-empty
+                pk: Any = None
+            elif len(pk_fields) == 1:
+                fname = pk_fields[0]
+                # For relation-based PK fields, read the FK id from __dict__ (not
+                # getattr, which would return the related entity object via descriptor).
+                if fname in value_cls._fields_:
+                    pk = getattr(value, fname)
+                else:
+                    pk = value.__dict__.get(f"_{fname}_id")
+            else:
+                # Composite PK — store a tuple of FK column values (all scalars).
+                vals: list[Any] = []
+                for fname in pk_fields:
+                    if fname in value_cls._fields_:
+                        vals.append(getattr(value, fname))
+                    else:
+                        vals.append(value.__dict__.get(f"_{fname}_id"))
+                pk = tuple(vals)
             obj.__dict__[self._fk_key] = pk
 
     def __delete__(self, obj: Any) -> None:
@@ -409,6 +559,28 @@ class SetDescriptor:
         return cached
 
     def __set__(self, obj: Any, value: Any) -> None:
+        if isinstance(value, list) and "_dbvals_" in obj.__dict__ and "_db_" in obj.__dict__:
+            # Entity is already persisted. For M2M relations, flush the join-table
+            # change immediately instead of deferring to _do_update (which would
+            # also needlessly update all scalar fields and fire before_update).
+            obj.__dict__.pop(self._cache_key, None)  # clear any cached collection
+            col = self.__get__(obj, type(obj))  # pyright: ignore[reportUnknownArgumentType]
+            try:
+                if col._is_m2m():
+                    col.clear()
+                    if value:
+                        # Flush any new (unsaved) items in the value list first,
+                        # so they have PKs before being inserted into the join table.
+                        db = obj.__dict__.get("_db_")
+                        if db is not None:
+                            for item in value:  # pyright: ignore[reportUnknownVariableType]
+                                if "_dbvals_" not in item.__dict__:  # pyright: ignore[reportUnknownMemberType]
+                                    db.save(item)
+                        col.add(*value)
+                    obj.__dict__.pop(self._cache_key, None)
+                    return
+            except Exception:
+                pass  # fall through to deferred list storage
         obj.__dict__[self._cache_key] = value
 
     def __delete__(self, obj: Any) -> None:
@@ -448,12 +620,28 @@ class _EntityIterator:
 # ---------------------------------------------------------------------------
 
 
+def _pk_col_for_field(entity_cls: type, field_name: str) -> str:
+    """Return the SQL column name for PK *field_name* on *entity_cls*.
+
+    For scalar fields, uses :attr:`FieldSpec.column` or the field name itself.
+    For relation fields (e.g. ``user: PK[User]``), returns ``<field_name>_id``.
+    """
+    fields = getattr(entity_cls, "_fields_", {})
+    if field_name in fields:
+        return fields[field_name].spec.column or field_name
+    # Relation-based PK: fall back to <field>_id
+    relations = getattr(entity_cls, "_relations_", {})
+    if field_name in relations:
+        return relations[field_name].spec.column or f"{field_name}_id"
+    return f"{field_name}_id"
+
+
 def _target_name(target: Any) -> str | None:
     """Return the lower-case entity name for *target* (str / ForwardRef / class)."""
 
     if isinstance(target, str):
         return target.lower()
-    if isinstance(target, ForwardRef):
+    if isinstance(target, (ForwardRef, _LazyType)):
         return target.__forward_arg__.lower()
     if isinstance(target, type):
         return target.__name__.lower()
@@ -463,7 +651,8 @@ def _target_name(target: Any) -> str | None:
 def _resolve_entity_target(target: Any) -> EntityMeta | None:
     """Resolve *target* to the entity class or ``None`` if unresolvable.
 
-    Accepts a concrete class, a plain string name, or a :class:`typing.ForwardRef`.
+    Accepts a concrete class, a plain string name, a :class:`typing.ForwardRef`,
+    or a :class:`_LazyType`.
     """
     if isinstance(target, type) and isinstance(target, EntityMeta):
         return target
@@ -474,6 +663,41 @@ def _resolve_entity_target(target: Any) -> EntityMeta | None:
         (cls for cls in _entity_registry if cls.__name__.lower() == name),
         None,
     )
+
+
+def _derive_composite_fk_cols(rel_name: str, target_cls: type | str | _LazyType | None) -> list[str]:
+    """Derive FK column names for a ``Single`` relation to a composite-PK entity.
+
+    For each PK field of *target_cls*, the FK column name is
+    ``<rel_name>_<pk_col>`` where *pk_col* is the DB column name of that PK
+    field (e.g. ``shop_order_order_id``, ``shop_order_shop_id``).
+    """
+    from nextorm.fields import RelationKind  # noqa: PLC0415
+
+    # Resolve string / ForwardRef targets before processing
+    if not isinstance(target_cls, type):
+        resolved = _resolve_entity_target(target_cls)
+        if resolved is None:
+            return []
+        target_cls = resolved
+
+    pk_cols: list[str] = []
+    fields = getattr(target_cls, "_fields_", {})
+    relations = getattr(target_cls, "_relations_", {})
+    pk_fields: tuple[str, ...] = getattr(target_cls, "_pk_fields_", ())
+    for fname in pk_fields:
+        if fname in fields:
+            fi = fields[fname]
+            pk_cols.append(fi.spec.column or fname)
+        elif fname in relations:
+            ri = relations[fname]
+            if ri.spec.kind == RelationKind.SINGLE:
+                pk_cols.append(ri.spec.column or f"{fname}_id")
+            else:  # pragma: no cover — PK relations are always SINGLE, never SET
+                pk_cols.append(f"{fname}_id")
+        else:  # pragma: no cover — PK fields always exist in _fields_ or _relations_
+            pk_cols.append(f"{fname}_id")
+    return [f"{rel_name}_{pk_col}" for pk_col in pk_cols]
 
 
 def _matches_entity(target: Any, cls: type) -> bool:
@@ -525,7 +749,8 @@ class FieldInfo:
         self.spec = spec
 
     def __repr__(self) -> str:
-        return f"FieldInfo({self.name!r}, {self.py_type.__name__}, {self.spec!r})"
+        py_type_name = getattr(self.py_type, "__name__", repr(self.py_type))
+        return f"FieldInfo({self.name!r}, {py_type_name}, {self.spec!r})"
 
 
 class RelationInfo:
@@ -616,6 +841,108 @@ def _find_db_for_entity(entity_cls: type) -> Any:
         f"Cannot find a mapped Database for entity {entity_cls.__name__!r}."
         " Call db.generate_mapping() with this entity first."
     )
+
+
+def _kwargs_to_filters(
+    cls: Any,
+    kwargs: dict[str, Any],
+) -> list[Any]:
+    """Translate keyword equality filters to SQL AST filter nodes.
+
+    Handles both scalar fields (``field=value``) and relation attributes
+    (``relation=entity_instance``), translating the latter to their FK
+    column name and PK value automatically.
+
+    Returns a list of :class:`~nextorm.sql.nodes.BinOp` nodes suitable for
+    chaining with :meth:`~nextorm.query.QuerySet.filter`.
+    """
+    from nextorm.sql.nodes import BinOp, ColumnRef, Param  # noqa: PLC0415
+
+    filters: list[Any] = []
+    for field, value in kwargs.items():
+        ri: Any = cls._relations_.get(field) if hasattr(cls, "_relations_") else None
+        if ri is not None and ri.spec.kind == RelationKind.SINGLE:
+            # Translate relation attribute to its FK column and PK value
+            fk_col: str = ri.spec.column or f"{field}_id"
+            if isinstance(value, Entity):
+                from nextorm.database import _get_pk_val  # noqa: PLC0415
+
+                pk_val = _get_pk_val(value)
+            else:
+                pk_val = value
+            filters.append(BinOp(ColumnRef(fk_col), "=", Param(value=pk_val)))
+        else:
+            filters.append(BinOp(ColumnRef(field), "=", Param(value=value)))
+    return filters
+
+
+class _LazyType:
+    """Placeholder for an unresolved type name used when evaluating annotations.
+
+    Returned by :class:`_ForwardRefProxy` for missing names so that type
+    annotations that include ``TYPE_CHECKING``-only imports can be evaluated
+    without error.  Behaves like :class:`~typing.ForwardRef` for name
+    resolution: :attr:`__forward_arg__` holds the original name.
+
+    Supports ``|`` so ``X | None`` syntax in annotation strings works even when
+    ``X`` could not be resolved from the module namespace.
+    """
+
+    __slots__ = ("__forward_arg__",)
+
+    def __init__(self, name: str) -> None:
+        self.__forward_arg__ = name
+
+    def __or__(self, other: Any) -> Any:
+        return Union[self, other]  # noqa: UP007
+
+    def __ror__(self, other: Any) -> Any:
+        return Union[other, self]  # noqa: UP007
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"_LazyType({self.__forward_arg__!r})"
+
+
+class _ForwardRefProxy(dict):  # type: ignore[type-arg]
+    """Proxy namespace used when evaluating annotations.
+
+    When a name is missing — typically because it was imported only under
+    ``TYPE_CHECKING`` to break circular imports — return a :class:`_LazyType`
+    instead of raising ``NameError``.  This keeps the annotation parseable so
+    EntityMeta can extract the marker type; the target entity is resolved later
+    during :meth:`~nextorm.database.Database.generate_mapping`.
+    """
+
+    def __missing__(self, key: str) -> _LazyType:
+        return _LazyType(key)
+
+
+def _get_annotations_safe(klass: type) -> dict[str, Any]:
+    """Return evaluated annotations for *klass*, tolerating unresolvable names.
+
+    Equivalent to ``inspect.get_annotations(klass, eval_str=True)`` but uses
+    :class:`_ForwardRefProxy` so that names only available under
+    ``TYPE_CHECKING`` (e.g. to break circular imports) produce a
+    :class:`_LazyType` instead of raising :exc:`NameError`.
+    """
+    import builtins
+
+    raw = inspect.get_annotations(klass, eval_str=False)
+    module = sys.modules.get(klass.__module__)
+    # Combine module namespace with builtins, so builtin types like str/int are resolved
+    ns_dict = dict(vars(module) if module is not None else {})
+    ns_dict.update(vars(builtins))
+    ns = _ForwardRefProxy(ns_dict)
+    result: dict[str, Any] = {}
+    for attr, ann in raw.items():
+        if isinstance(ann, str):
+            try:
+                result[attr] = eval(ann, ns)  # noqa: S307
+            except Exception:
+                result[attr] = _LazyType(ann)
+        else:
+            result[attr] = ann
+    return result
 
 
 class EntityMeta(type):
@@ -756,7 +1083,7 @@ class EntityMeta(type):
                 # Skip the bare Entity base — its annotations are type-checker
                 # helpers only and should not be treated as field declarations.
                 continue
-            all_annotations.update(inspect.get_annotations(klass, eval_str=True))
+            all_annotations.update(_get_annotations_safe(klass))
 
         for attr_name, annotation in all_annotations.items():
             if attr_name.startswith("_") and not attr_name.startswith("__"):
@@ -764,6 +1091,24 @@ class EntityMeta(type):
                 pass
             elif attr_name.startswith("__"):
                 continue
+
+            # If this field is inherited from a parent entity class and NOT redeclared
+            # in the current class body, reuse the parent's FieldInfo/RelationInfo
+            # directly to preserve all options (defaults, column names, etc.).
+            if attr_name not in namespace:
+                for parent in cls.__mro__[1:]:
+                    if not isinstance(parent, EntityMeta):
+                        continue
+                    if attr_name in parent._fields_:
+                        fields[attr_name] = parent._fields_[attr_name]
+                        setattr(cls, attr_name, parent.__dict__[attr_name])
+                        break
+                    if attr_name in parent._relations_:
+                        relations[attr_name] = parent._relations_[attr_name]
+                        setattr(cls, attr_name, parent.__dict__[attr_name])
+                        break
+                if attr_name in fields or attr_name in relations:
+                    continue
 
             # Subscripting a marker class (e.g. Req[str]) returns a new subclass whose
             # __origin__ points back to the base marker class (Req, Opt, PK, …).
@@ -801,6 +1146,13 @@ class EntityMeta(type):
                 # Always extract marker options if present
                 if class_val is not None and hasattr(class_val, "_options"):
                     marker_opts = dict(class_val._options)
+                    # Resolve positional args using the annotation's inner_type.
+                    # e.g. `price: Req[Decimal] = Req(9, 2)` → precision=9, scale=2
+                    pos_args: tuple[Any, ...] = getattr(class_val, "_args", ())
+                    if pos_args:
+                        pos_names = _positional_args_for_type(inner_type)
+                        for pname, pval in zip(pos_names, pos_args, strict=False):
+                            marker_opts.setdefault(pname, pval)
                     # --- FieldSpec: Only 'column' is allowed, not 'columns' ---
                     if "columns" in marker_opts:
                         raise TypeError(
@@ -808,16 +1160,31 @@ class EntityMeta(type):
                         )
                     if "column" in marker_opts and not isinstance(marker_opts["column"], str):
                         raise TypeError(f"Field '{attr_name}' 'column' option must be a string.")
+
+                # Validate that field markers are properly subscripted
+                # Bare markers like 'Req' or 'Opt' (without [T]) have a TypeVar as inner_type
+                from typing import TypeVar as _TypeVar
+
+                if isinstance(inner_type, _TypeVar):
+                    raise TypeError(
+                        f"Field '{attr_name}' uses bare marker without a type parameter. "
+                        f"Field markers must be subscripted: use 'Req[T]', 'Opt[T]', 'PK[T]', etc."
+                    )
+
                 # For Opt, enforce correct nullable logic
                 # - Opt[str]/Opt[LongStr]: nullable only if user sets it
                 # - Opt[non-str]: always nullable unless explicitly set
                 actual_inner_type = inner_type
                 if origin is _Opt:
                     # Determine if this is a string-like Opt
-                    is_str_type = issubclass(inner_type, str)
+                    is_str_type = isinstance(inner_type, type) and issubclass(inner_type, str)
                     # If not string, force nullable True unless user set it
                     if not is_str_type and "nullable" not in marker_opts:
                         marker_opts["nullable"] = True
+                    # Opt[str] / Opt[LongStr] without nullable=True: use "" as zero-value.
+                    # This ensures newly created entities always have "" not None for these fields.
+                    if is_str_type and not marker_opts.get("nullable", False):
+                        marker_opts.setdefault("default", "")
 
                 # --- PK special handling: if PK[...] is an Entity, treat as relation ---
                 if origin is _PK or (isinstance(annotation, type) and issubclass(annotation, _PK)):
@@ -832,11 +1199,16 @@ class EntityMeta(type):
                     is_entity_pk = False
                     with contextlib.suppress(Exception):
                         is_entity_pk = isinstance(pk_type, type) and issubclass(pk_type, _Entity)
+                    # A ForwardRef, _LazyType, or string means the target entity is not yet
+                    # imported (e.g. it's under TYPE_CHECKING to break a circular import).
+                    # PK[SomeEntity] only makes sense as a relation, so treat it as such.
+                    if not is_entity_pk and isinstance(pk_type, (str, ForwardRef, _LazyType)):
+                        is_entity_pk = True
                     if is_entity_pk:
                         # Forward all marker options to RelationSpec
                         rel_spec = RelationSpec(
                             kind=RelationKind.SINGLE,
-                            target=pk_type,
+                            target=pk_type,  # pyright: ignore[reportArgumentType]
                             primary_key=True,
                             nullable=marker_opts.get("nullable", False),
                             **{k: v for k, v in marker_opts.items() if k != "nullable"},
@@ -888,7 +1260,11 @@ class EntityMeta(type):
                         and not spec.lazy
                     ):
                         spec = dataclasses.replace(spec, lazy=True)
-                elif inner_type is not Vec and issubclass(inner_type, Vec):
+                elif (
+                    inner_type is not Vec
+                    and isinstance(inner_type, type)
+                    and issubclass(inner_type, Vec)
+                ):
                     # Vec[384] produces a dynamic Vec subclass carrying _dimensions_.
                     # Normalise to the base Vec type and store the dimension in FieldSpec.
                     dims: int | None = getattr(inner_type, "_dimensions_", None)
@@ -905,11 +1281,32 @@ class EntityMeta(type):
                 if kind == RelationKind.SINGLE:
                     # Detect Single[T | None] → nullable FK
                     raw_target = args[0] if args else type(None)
-                    # Handle Optional/Union for nullable detection
-                    if isinstance(raw_target, types.UnionType):
-                        non_none = [a for a in raw_target.__args__ if a is not type(None)]
-                        nullable = len(non_none) < len(getattr(raw_target, "__args__", []))
-                        target: type | str = non_none[0] if non_none else type(None)
+                    # Handle Optional/Union for nullable detection.
+                    # Covers `Union[X, None]` / `Optional[X]` (typing.Union) and
+                    # `X | None` (types.UnionType, produced when an unresolved ForwardRef
+                    # uses __or__ to build a union, or when using PEP 604 syntax).
+                    _raw_target_origin = get_origin(raw_target)
+                    if _raw_target_origin is Union or isinstance(raw_target, types.UnionType):
+                        _union_args = get_args(raw_target)
+                        non_none = [a for a in _union_args if a is not type(None)]
+                        nullable = len(non_none) < len(_union_args)
+                        target: type | str | _LazyType = non_none[0] if non_none else type(None)
+                    elif isinstance(raw_target, str) and "|" in raw_target:
+                        # Handle string annotations like Single['TypeName | None'].
+                        # This occurs when the inner type is written as a quoted string
+                        # (e.g. to avoid an import cycle) and contains `| None`.
+                        parts = [p.strip() for p in raw_target.split("|")]
+                        none_parts = [p for p in parts if p.lower() == "none"]
+                        non_none_parts = [p for p in parts if p.lower() != "none"]
+                        if none_parts and len(non_none_parts) == 1:
+                            nullable = True
+                            target = _LazyType(non_none_parts[0])
+                        else:  # pragma: no cover
+                            # Multi-type union without None (e.g. 'Type1 | Type2').
+                            # Unreachable: Python's annotation system resolves such unions
+                            # to actual class objects, not string representations.
+                            nullable = False
+                            target = raw_target
                     else:
                         nullable = False
                         target = raw_target
@@ -924,11 +1321,17 @@ class EntityMeta(type):
                         _normalize_singleopts_columns(marker_opts, attr_name)
                         nullable = marker_opts.pop("nullable", nullable)
                         rel_spec = RelationSpec(
-                            kind=kind, target=target, nullable=nullable, **marker_opts
+                            kind=kind,
+                            target=target,
+                            nullable=nullable,
+                            **marker_opts,
                         )
                     elif isinstance(rel_class_val, RelationSpec):
                         rel_spec = dataclasses.replace(
-                            rel_class_val, kind=kind, target=target, nullable=nullable
+                            rel_class_val,
+                            kind=kind,
+                            target=target,
+                            nullable=nullable,
                         )
                     else:
                         rel_spec = RelationSpec(kind=kind, target=target, nullable=nullable)
@@ -941,15 +1344,15 @@ class EntityMeta(type):
                     if hasattr(rel_class_val, "_options"):
                         marker_opts = getattr(rel_class_val, "_options", {})
                         _normalize_setopts_reverse_columns(marker_opts, attr_name)
-                        rel_spec = RelationSpec(kind=kind, target=target, **marker_opts)
+                        rel_spec = RelationSpec(kind=kind, target=target, **marker_opts)  # pyright: ignore[reportArgumentType]
                     elif isinstance(rel_class_val, RelationSpec):
                         rel_spec = dataclasses.replace(
                             rel_class_val,
                             kind=kind,
-                            target=target,
+                            target=target,  # pyright: ignore[reportArgumentType]
                         )
                     else:
-                        rel_spec = RelationSpec(kind=kind, target=target)
+                        rel_spec = RelationSpec(kind=kind, target=target)  # pyright: ignore[reportArgumentType]
                     ri = RelationInfo(attr_name, rel_spec)
                     relations[attr_name] = ri
                     setattr(cls, attr_name, SetDescriptor(attr_name, ri))
@@ -1007,10 +1410,20 @@ class EntityMeta(type):
                     inner_type = args[0]
                 if inner_type is None:  # pragma: no cover
                     inner_type = getattr(cast("object", ann), "_type_arg_", None)
+
+                # Extract marker options to respect user's auto setting
+                pk_marker_opts: dict[str, Any] = {}
+                if class_val is not None and hasattr(class_val, "_options"):
+                    pk_marker_opts = dict(class_val._options)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+
                 if inner_type is int:
-                    new_spec = dataclasses.replace(f.spec, primary_key=True, auto=True)
+                    # Integer PKs: default to auto=True unless explicitly set to False
+                    auto_val = pk_marker_opts.get("auto", True)
+                    new_spec = dataclasses.replace(f.spec, primary_key=True, auto=auto_val)
                 else:
-                    new_spec = dataclasses.replace(f.spec, primary_key=True)
+                    # Non-integer PKs (str, UUID, etc): default to auto=False unless set to True
+                    auto_val = pk_marker_opts.get("auto", False)
+                    new_spec = dataclasses.replace(f.spec, primary_key=True, auto=auto_val)
                 fields[attr_name] = FieldInfo(
                     f.name,
                     f.py_type,
@@ -1019,7 +1432,11 @@ class EntityMeta(type):
         pk_fields: list[FieldInfo] = [
             f for f in fields.values() if getattr(f.spec, "primary_key", False)
         ]
-        if not pk_fields and _composite_pk_directive is None:
+        # Detect relation-based PKs (e.g. ``user: PK[User]`` produces a relation, not a field).
+        relation_pk_names: list[str] = [
+            rname for rname, ri in relations.items() if ri.spec.primary_key
+        ]
+        if not pk_fields and _composite_pk_directive is None and not relation_pk_names:
             if "id" in fields:
                 raise TypeError(
                     f"Entity '{name}' defines 'id' field but doesn't declare it as a primary key. "
@@ -1041,9 +1458,17 @@ class EntityMeta(type):
         if _composite_pk_directive is not None:
             cls._pk_fields_ = _composite_pk_directive.fields
             cls._pk_field_ = None  # composite — no single pk_field shortcut
-        else:
-            cls._pk_fields_ = (pk_fields[0].name,) if pk_fields else ()
-            cls._pk_field_ = pk_fields[0].name if pk_fields else None
+        elif pk_fields:
+            cls._pk_fields_ = (pk_fields[0].name,)
+            cls._pk_field_ = pk_fields[0].name
+        elif relation_pk_names:
+            # Relation-based PK (e.g. ``user: PK[User]``).
+            # Single relation PK → single pk_field; multiple → composite (pk_field = None).
+            cls._pk_fields_ = tuple(relation_pk_names)
+            cls._pk_field_ = relation_pk_names[0] if len(relation_pk_names) == 1 else None
+        else:  # pragma: no cover — auto-pk injection always populates pk_fields
+            cls._pk_fields_ = ()
+            cls._pk_field_ = None
         # Non-pk constraints only (PrimaryKey() directives are handled above)
         cls._constraints_ = [c for c in all_constraints if not c.primary_key]
 
@@ -1105,6 +1530,7 @@ class EntityMeta(type):
         """
         pk_fields = cls._pk_fields_
         pk_any: Any = pk
+        pk_tuple2: tuple[Any, ...] | None = None
 
         if cls._pk_field_ is not None:
             # Single-column PK
@@ -1116,23 +1542,87 @@ class EntityMeta(type):
                         f"expected one value, got {len(pk_tuple)}."
                     )
                 pk_any = pk_tuple[0]
-            db = _find_db_for_entity(cls)
-            qs = db.select(cls).filter(BinOp(ColumnRef(cls._pk_field_), "=", Param(value=pk_any)))
+            pk_tuple2 = (pk_any,)
+        else:
+            # Composite PK
+            pk_tuple2 = pk_any if isinstance(pk_any, tuple) else (pk_any,)  # pyright: ignore[reportUnknownVariableType]
+            if len(pk_tuple2) != len(pk_fields):
+                raise ValueError(
+                    f"{cls.__name__!r} has {len(pk_fields)} PK fields "
+                    f"({', '.join(pk_fields)}); got {len(pk_tuple2)} value(s)."
+                )
+
+        # Check session cache first (identity map and objects_to_save)
+        from nextorm.database import _get_pk_val  # noqa: PLC0415
+        from nextorm.session import _get_session_stack  # noqa: PLC0415
+
+        # Normalize pk_any and pk_tuple2 to extract entity PKs
+        # If pk_any is an Entity, extract its PK value
+        if isinstance(pk_any, Entity):
+            pk_any = _get_pk_val(pk_any)
+
+        # Update pk_tuple2 after normalization
+        if cls._pk_field_ is not None:
+            pk_tuple2 = (pk_any,)  # pyright: ignore[reportUnknownVariableType]
+        else:
+            # Composite PK: normalize each element in the tuple
+            normalized: list[Any] = []
+            for val in pk_tuple2:  # pyright: ignore[reportOptionalIterable]
+                if isinstance(val, Entity):
+                    normalized.append(_get_pk_val(val))
+                else:
+                    normalized.append(val)
+            pk_tuple2 = tuple(normalized)
+
+        cache = _get_session_stack().current
+        if cache is not None:
+            # Check identity map first (already persisted)
+            cache_key: tuple[type[Entity], Any] = (  # pyright: ignore[reportUnknownVariableType]
+                cast("type[Entity]", cls),
+                pk_any if cls._pk_field_ is not None else pk_tuple2,
+            )
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return cached
+            # Check objects_to_save (new entities not yet persisted)
+            for entity in cache.objects_to_save:
+                entity_pk = _get_pk_val(entity)
+                # Normalize entity_pk: if it's an Entity, extract its PK value
+                if isinstance(
+                    entity_pk, Entity
+                ):  # pragma: no cover — _get_pk_val always returns scalars
+                    entity_pk = _get_pk_val(entity_pk)
+                elif isinstance(entity_pk, tuple):
+                    # Composite PK: normalize each element
+                    norm2: list[Any] = []
+                    for val in entity_pk:  # pyright: ignore[reportUnknownVariableType]
+                        if isinstance(
+                            val, Entity
+                        ):  # pragma: no cover — tuple elements from _get_pk_val are always scalars
+                            norm2.append(_get_pk_val(val))
+                        else:
+                            norm2.append(val)  # pyright: ignore[reportUnknownArgumentType]
+                    entity_pk = tuple(norm2)
+
+                if entity.__class__ is cls and entity_pk == (  # pyright: ignore[reportUnnecessaryComparison]
+                    pk_any if cls._pk_field_ is not None else pk_tuple2
+                ):
+                    return entity
+
+        # Not in cache, query the database
+        db = _find_db_for_entity(cls)
+        if cls._pk_field_ is not None:
+            pk_col = _pk_col_for_field(cls, cls._pk_field_)
+            qs = db.select(cls).filter(BinOp(ColumnRef(pk_col), "=", Param(value=pk_any)))
             result = qs.get()
             if result is None:
-                raise KeyError(pk_any)
+                raise KeyError(pk_any)  # pyright: ignore[reportUnknownArgumentType]
             return result
 
         # Composite PK
-        pk_tuple2: tuple[Any, ...] = pk_any if isinstance(pk_any, tuple) else (pk_any,)  # pyright: ignore[reportUnknownVariableType]
-        if len(pk_tuple2) != len(pk_fields):
-            raise ValueError(
-                f"{cls.__name__!r} has {len(pk_fields)} PK fields "
-                f"({', '.join(pk_fields)}); got {len(pk_tuple2)} value(s)."
-            )
-        db = _find_db_for_entity(cls)
+        assert pk_tuple2 is not None
         conditions = [
-            BinOp(ColumnRef(field), "=", Param(value=val))
+            BinOp(ColumnRef(_pk_col_for_field(cls, field)), "=", Param(value=val))
             for field, val in zip(pk_fields, pk_tuple2, strict=False)
         ]
         node: Any = conditions[0]
@@ -1484,64 +1974,164 @@ class Entity(metaclass=EntityMeta):
         db._commit_transaction()
 
     @classmethod
-    def get(cls, **kwargs: Any) -> Self | None:
-        """Return the first entity matching all given field values, or ``None``.
+    def get(  # noqa: ARG002 — predicate is positional-only
+        cls,
+        predicate: Callable[[Any], Any] | None = None,
+        /,
+        *conditions: SqlNode,
+        **kwargs: Any,
+    ) -> Self | None:
+        """Return the first entity matching the given condition, or ``None``.
 
         Locates the mapped database automatically via
         :func:`_find_db_for_entity`.  Raises :exc:`RuntimeError` if more than
         one row matches.
 
+        Two calling forms are supported:
+
+        **Keyword arguments** — simple column equality filters:
+
         .. code-block:: python
 
             user = User.get(email="alice@example.com")
-            if user is None:
-                print("not found")
 
-        For more complex filtering use :meth:`select`:
+        **Lambda predicate** — more complex conditions using the same
+        generator-expression DSL.  The lambda receives the entity as its single
+        argument; attribute access is translated to ``ColumnRef`` nodes:
 
         .. code-block:: python
 
-            user = User.select().filter(User.age > 18).get()
+            user = User.get(lambda u: u.email == "alice@example.com")
+
+        .. note::
+
+            Multi-level attribute access (relation traversal, e.g.
+            ``lambda c: c.shop.slug == slug``) is **not** supported by the
+            decompiler and will raise :exc:`~nextorm.generators.DecompileError`.
+            Use :meth:`select` with an explicit join for those cases.
+
+        Both forms can be combined::
+
+            user = User.get(lambda u: u.active == True, name="alice")
         """
+        # Check session cache first for simple equality filters
+        # This allows finding newly created but not-yet-persisted entities
+        if predicate is None and kwargs:
+            from nextorm.session import _get_session_stack  # noqa: PLC0415
+
+            cache = _get_session_stack().current
+            if cache is not None:
+                # Try to find in objects_to_save (new entities not yet persisted)
+                for entity in cache.objects_to_save:
+                    # Check if all kwargs match this entity's attributes
+                    if type(entity) is cls and all(
+                        getattr(entity, k, object()) == v for k, v in kwargs.items()
+                    ):
+                        return entity
+
         db = _find_db_for_entity(cls)
         qs = db.select(cls)
-        for field, value in kwargs.items():
-            qs = qs.filter(BinOp(ColumnRef(field), "=", Param(value=value)))
+        if predicate is not None:
+            if not callable(predicate):
+                raise TypeError(
+                    f"Entity.get() first argument must be a callable predicate, "
+                    f"got {type(predicate)!r}."
+                )
+            from nextorm.generators import _apply_predicate  # noqa: PLC0415
+
+            qs = _apply_predicate(qs, predicate, cls)
+        for cond in conditions:
+            qs = qs.filter(cond)
+        for f in _kwargs_to_filters(cls, kwargs):
+            qs = qs.filter(f)
         return cast("Self | None", qs.get())
 
     @classmethod
-    def exists(cls, **kwargs: Any) -> bool:
-        """Return ``True`` if at least one entity matches all given field values.
+    def exists(
+        cls,
+        predicate: Callable[[Any], Any] | None = None,
+        /,
+        *conditions: SqlNode,
+        **kwargs: Any,
+    ) -> bool:
+        """Return ``True`` if at least one entity matches the given condition.
+
+        Accepts the same calling forms as :meth:`get` — keyword equality
+        filters, a lambda predicate, or both combined:
 
         .. code-block:: python
 
             if User.exists(email="alice@example.com"):
                 raise ValueError("Email already in use")
+
+            if User.exists(lambda u: u.age < 18):
+                print("minors present")
         """
         db = _find_db_for_entity(cls)
         qs = db.select(cls)
-        for field, value in kwargs.items():
-            qs = qs.filter(BinOp(ColumnRef(field), "=", Param(value=value)))
+        if predicate is not None:
+            if not callable(predicate):
+                raise TypeError(
+                    f"Entity.exists() first argument must be a callable predicate, "
+                    f"got {type(predicate)!r}."
+                )
+            from nextorm.generators import _apply_predicate  # noqa: PLC0415
+
+            qs = _apply_predicate(qs, predicate, cls)
+        for cond in conditions:
+            qs = qs.filter(cond)
+        for f in _kwargs_to_filters(cls, kwargs):
+            qs = qs.filter(f)
         return cast("bool", qs.exists())
 
     @classmethod
-    def select(cls) -> Any:
+    def select(
+        cls,
+        predicate: Callable[[Any], Any] | None = None,
+        /,
+        *conditions: SqlNode,
+        **kwargs: Any,
+    ) -> QuerySet[Self]:  # pyright: ignore[reportReturnType]
         """Return a :class:`~nextorm.query.QuerySet` for this entity.
 
         Locates the mapped database automatically.  Chain filter, ordering, and
-        fetch methods on the returned queryset:
+        fetch methods on the returned queryset.
+
+        An optional *predicate* lambda and keyword equality filters may be
+        supplied to pre-filter the queryset:
 
         .. code-block:: python
 
             active = User.select().filter(User.active == True).fetch_all()
-            count = User.select().count()
-            first = User.select().filter(User.age > 18).get()
+            found = User.select(lambda u: u.email == email)
+            shop_orders = ShopOrder.select(shop=my_shop)
+            items = OrderItem.select(lambda oi: oi.shop_order.order == order).sort_by(OrderItem.name)
         """
         db = _find_db_for_entity(cls)
-        return db.select(cls)
+        qs = db.select(cls)
+        if predicate is not None:
+            if not callable(predicate):
+                raise TypeError(
+                    f"Entity.select() first argument must be a callable predicate, "
+                    f"got {type(predicate)!r}."
+                )
+            from nextorm.generators import _apply_predicate
+
+            qs = _apply_predicate(qs, predicate, cls)
+        for cond in conditions:
+            qs = qs.filter(cond)
+        for f in _kwargs_to_filters(cls, kwargs):
+            qs = qs.filter(f)
+        return qs  # type: ignore[no-any-return]
 
     @classmethod
-    def aselect(cls) -> Any:
+    def aselect(
+        cls,
+        predicate: Callable[[Any], Any] | None = None,
+        /,
+        *conditions: SqlNode,
+        **kwargs: Any,
+    ) -> AsyncQuerySet[Self]:  # pyright: ignore[reportReturnType]
         """Return an :class:`~nextorm.async_database.AsyncQuerySet` for this entity.
 
         Returns the queryset synchronously — no ``await`` needed on this call.
@@ -1556,7 +2146,7 @@ class Entity(metaclass=EntityMeta):
         :class:`~nextorm.database.Database` rather than an
         :class:`~nextorm.async_database.AsyncDatabase`.
         """
-        from nextorm.async_database import AsyncDatabase
+        from nextorm.async_database import AsyncDatabase  # noqa: PLC0415
 
         db = _find_db_for_entity(cls)
         if not isinstance(db, AsyncDatabase):
@@ -1564,18 +2154,42 @@ class Entity(metaclass=EntityMeta):
                 f"Entity {cls.__name__!r} is mapped to a sync Database, not an AsyncDatabase."
                 " Use Entity.select() or db.aselect() explicitly."
             )
-        return db.aselect(cls)
+        qs = db.aselect(cls)
+        if predicate is not None:
+            if not callable(predicate):
+                raise TypeError(
+                    f"Entity.aselect() first argument must be a callable predicate, "
+                    f"got {type(predicate)!r}."
+                )
+            from nextorm.generators import _apply_predicate  # noqa: PLC0415
+
+            qs = _apply_predicate(qs, predicate, cls)
+        for cond in conditions:
+            qs = qs.filter(cond)
+        for f in _kwargs_to_filters(cls, kwargs):
+            qs = qs.filter(f)
+        return qs
 
     @classmethod
-    async def aget(cls, **kwargs: Any) -> Self | None:
+    async def aget(
+        cls,
+        predicate: Callable[[Any], Any] | None = None,
+        /,
+        *conditions: SqlNode,
+        **kwargs: Any,
+    ) -> Self | None:
         """Async equivalent of :meth:`get`.
 
         Return the first entity matching all given field values, or ``None``.
         Raises :exc:`RuntimeError` if more than one row matches.
 
+        Accepts the same calling forms as :meth:`get` — keyword equality
+        filters, a lambda predicate, or both combined:
+
         .. code-block:: python
 
             user = await User.aget(email="alice@example.com")
+            user = await User.aget(lambda u: u.email == "alice@example.com")
         """
         from nextorm.async_database import AsyncDatabase
 
@@ -1586,9 +2200,50 @@ class Entity(metaclass=EntityMeta):
                 " Use Entity.get() instead."
             )
         qs = db.aselect(cls)
-        for field, value in kwargs.items():
-            qs = qs.filter(BinOp(ColumnRef(field), "=", Param(value=value)))
+        if predicate is not None:
+            if not callable(predicate):
+                raise TypeError(
+                    f"Entity.aget() first argument must be a callable predicate, "
+                    f"got {type(predicate)!r}."
+                )
+            from nextorm.generators import _apply_predicate  # noqa: PLC0415
+
+            qs = _apply_predicate(qs, predicate, cls)
+        for cond in conditions:
+            qs = qs.filter(cond)
+        for f in _kwargs_to_filters(cls, kwargs):
+            qs = qs.filter(f)
         return await qs.get()
+
+    @classmethod
+    def drop_table(cls, *, with_all_data: bool = False) -> None:
+        """Drop the table associated with this entity from the database.
+
+        Parameters
+        ----------
+        with_all_data:
+            When ``False``, raises an error if the table contains data.
+            When ``True``, drops the table regardless of content.
+
+        Raises :exc:`RuntimeError` if the table contains data and ``with_all_data``
+        is ``False``.
+
+        Example::
+
+            User.drop_table(with_all_data=True)  # useful for test cleanup
+
+        .. note::
+
+            This is a convenience method equivalent to:
+
+            .. code-block:: python
+
+                db = _find_db_for_entity(User)
+                db.drop_table(User.__nextorm_table__.name, if_exists=True)
+        """
+        db = _find_db_for_entity(cls)
+        table_name = cls._table_name_
+        db.drop_table(table_name, if_exists=True, with_all_data=with_all_data)
 
     def to_dict(
         self,

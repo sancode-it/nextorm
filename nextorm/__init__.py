@@ -5,7 +5,10 @@ import contextlib
 from nextorm.async_database import AsyncDatabase, AsyncQuerySet
 from nextorm.database import Database
 from nextorm.debug import (
+    CapturedQuery,
     QueryStat,
+    async_capture_sql,
+    capture_sql,
     clear_global_stats,
     global_stats,
     set_sql_debug,
@@ -174,6 +177,9 @@ __all__ = [
     # Debug / diagnostics
     "set_sql_debug",
     "sql_debugging",
+    "capture_sql",
+    "async_capture_sql",
+    "CapturedQuery",
     "QueryStat",
     "global_stats",
     "clear_global_stats",

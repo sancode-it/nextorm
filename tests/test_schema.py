@@ -857,27 +857,27 @@ class TestSQLiteRendererColumnDef:
 
     def test_pk_with_autoincrement(self) -> None:
         col = Column("id", int, primary_key=True, auto_increment=True)
-        assert self.r._column_def(col) == "id INTEGER PRIMARY KEY AUTOINCREMENT"
+        assert self.r._column_def(col) == '"id" INTEGER PRIMARY KEY AUTOINCREMENT'
 
     def test_pk_without_autoincrement(self) -> None:
         col = Column("id", int, primary_key=True, auto_increment=False)
-        assert self.r._column_def(col) == "id INTEGER PRIMARY KEY"
+        assert self.r._column_def(col) == '"id" INTEGER PRIMARY KEY'
 
     def test_required_not_null(self) -> None:
         col = Column("name", str)
-        assert self.r._column_def(col) == "name TEXT NOT NULL"
+        assert self.r._column_def(col) == '"name" TEXT NOT NULL'
 
     def test_nullable_no_constraint(self) -> None:
         col = Column("bio", str, nullable=True)
-        assert self.r._column_def(col) == "bio TEXT"
+        assert self.r._column_def(col) == '"bio" TEXT'
 
     def test_unique(self) -> None:
         col = Column("email", str, unique=True)
-        assert self.r._column_def(col) == "email TEXT NOT NULL UNIQUE"
+        assert self.r._column_def(col) == '"email" TEXT NOT NULL UNIQUE'
 
     def test_sql_default(self) -> None:
         col = Column("status", str, sql_default="'active'")
-        assert self.r._column_def(col) == "status TEXT NOT NULL DEFAULT 'active'"
+        assert self.r._column_def(col) == "\"status\" TEXT NOT NULL DEFAULT 'active'"
 
 
 # ---------------------------------------------------------------------------
@@ -896,9 +896,9 @@ class TestSQLiteRendererStatements:
             ],
         )
         sql = self.r.create_table(table)
-        assert "CREATE TABLE IF NOT EXISTS post" in sql
-        assert "id INTEGER PRIMARY KEY AUTOINCREMENT" in sql
-        assert "title TEXT NOT NULL" in sql
+        assert 'CREATE TABLE IF NOT EXISTS "post"' in sql
+        assert '"id" INTEGER PRIMARY KEY AUTOINCREMENT' in sql
+        assert '"title" TEXT NOT NULL' in sql
 
     def test_create_table_with_fk(self) -> None:
         table = Table(
@@ -918,28 +918,28 @@ class TestSQLiteRendererStatements:
             ],
         )
         sql = self.r.create_table(table)
-        assert "CONSTRAINT fk_comment__post_id FOREIGN KEY (post_id)" in sql
-        assert "REFERENCES post (id) ON DELETE CASCADE" in sql
+        assert 'CONSTRAINT fk_comment__post_id FOREIGN KEY ("post_id")' in sql
+        assert 'REFERENCES "post" ("id") ON DELETE CASCADE' in sql
 
     def test_drop_table(self) -> None:
-        assert self.r.drop_table("post") == "DROP TABLE IF EXISTS post"
+        assert self.r.drop_table("post") == 'DROP TABLE IF EXISTS "post"'
 
     def test_add_column(self) -> None:
         col = Column("body", str, nullable=True)
-        assert self.r.add_column("post", col) == "ALTER TABLE post ADD COLUMN body TEXT"
+        assert self.r.add_column("post", col) == 'ALTER TABLE "post" ADD COLUMN "body" TEXT'
 
     def test_drop_column(self) -> None:
-        assert self.r.drop_column("post", "body") == "ALTER TABLE post DROP COLUMN body"
+        assert self.r.drop_column("post", "body") == 'ALTER TABLE "post" DROP COLUMN "body"'
 
     def test_create_index_plain(self) -> None:
         idx = Index(name="idx_post__slug", columns=["slug"])
         sql = self.r.create_index("post", idx)
-        assert sql == "CREATE INDEX IF NOT EXISTS idx_post__slug ON post (slug)"
+        assert sql == 'CREATE INDEX IF NOT EXISTS idx_post__slug ON "post" ("slug")'
 
     def test_create_index_unique(self) -> None:
         idx = Index(name="idx_post__slug", columns=["slug"], unique=True)
         sql = self.r.create_index("post", idx)
-        assert sql == "CREATE UNIQUE INDEX IF NOT EXISTS idx_post__slug ON post (slug)"
+        assert sql == 'CREATE UNIQUE INDEX IF NOT EXISTS idx_post__slug ON "post" ("slug")'
 
     def test_drop_index(self) -> None:
         assert self.r.drop_index("idx_post__slug") == "DROP INDEX IF EXISTS idx_post__slug"
@@ -961,7 +961,7 @@ class TestDDLRendererDispatch:
 
     def test_render_drop_table(self) -> None:
         op: SchemaOp = DropTable(table_name="t")
-        assert self.r.render(op) == "DROP TABLE IF EXISTS t"
+        assert self.r.render(op) == 'DROP TABLE IF EXISTS "t"'
 
     def test_render_add_column(self) -> None:
         op: SchemaOp = AddColumn(table_name="t", column=Column("x", int))
@@ -1047,9 +1047,9 @@ class TestPostgresRendererStatements:
             ],
         )
         sql = self.r.create_table(table)
-        assert "CREATE TABLE IF NOT EXISTS post" in sql
-        assert "id SERIAL PRIMARY KEY" in sql
-        assert "title TEXT NOT NULL" in sql
+        assert 'CREATE TABLE IF NOT EXISTS "post"' in sql
+        assert '"id" SERIAL PRIMARY KEY' in sql
+        assert '"title" TEXT NOT NULL' in sql
 
     def test_create_table_with_fk(self) -> None:
         table = Table(
@@ -1058,7 +1058,9 @@ class TestPostgresRendererStatements:
             foreign_keys=[ForeignKey("fk_comment__post_id", "post_id", "post")],
         )
         sql = self.r.create_table(table)
-        assert "CONSTRAINT fk_comment__post_id FOREIGN KEY (post_id) REFERENCES post (id)" in sql
+        assert (
+            'CONSTRAINT fk_comment__post_id FOREIGN KEY ("post_id") REFERENCES "post" ("id")' in sql
+        )
 
     def test_create_table_nullable_column(self) -> None:
         table = Table(name="t", columns=[Column("notes", str, nullable=True)])
@@ -1079,12 +1081,12 @@ class TestPostgresRendererStatements:
         assert "DEFAULT CURRENT_TIMESTAMP" in sql
 
     def test_drop_table(self) -> None:
-        assert self.r.drop_table("post") == "DROP TABLE IF EXISTS post"
+        assert self.r.drop_table("post") == 'DROP TABLE IF EXISTS "post"'
 
     def test_add_column(self) -> None:
         col = Column("body", str, nullable=True)
         sql = self.r.add_column("post", col)
-        assert sql == "ALTER TABLE post ADD COLUMN IF NOT EXISTS body TEXT"
+        assert sql == 'ALTER TABLE "post" ADD COLUMN IF NOT EXISTS "body" TEXT'
 
     def test_add_column_not_null(self) -> None:
         col = Column("views", int, nullable=False)
@@ -1093,17 +1095,17 @@ class TestPostgresRendererStatements:
 
     def test_drop_column(self) -> None:
         sql = self.r.drop_column("post", "body")
-        assert sql == "ALTER TABLE post DROP COLUMN IF EXISTS body"
+        assert sql == 'ALTER TABLE "post" DROP COLUMN IF EXISTS "body"'
 
     def test_create_index(self) -> None:
         idx = Index("idx_post__title", ["title"])
         sql = self.r.create_index("post", idx)
-        assert sql == "CREATE INDEX IF NOT EXISTS idx_post__title ON post (title)"
+        assert sql == 'CREATE INDEX IF NOT EXISTS idx_post__title ON "post" ("title")'
 
     def test_create_unique_index(self) -> None:
         idx = Index("unq_post__slug", ["slug"], unique=True)
         sql = self.r.create_index("post", idx)
-        assert sql == "CREATE UNIQUE INDEX IF NOT EXISTS unq_post__slug ON post (slug)"
+        assert sql == 'CREATE UNIQUE INDEX IF NOT EXISTS unq_post__slug ON "post" ("slug")'
 
     def test_drop_index(self) -> None:
         assert self.r.drop_index("idx_post__title") == "DROP INDEX IF EXISTS idx_post__title"
@@ -1116,7 +1118,7 @@ class TestPostgresRendererStatements:
         col = Column("amount", decimal.Decimal, precision=8, scale=2, nullable=False)
         sql = self.r.alter_column_type("post", col)
         # Should be a real ALTER statement, not a comment
-        assert sql.startswith("ALTER TABLE post ALTER COLUMN amount TYPE NUMERIC(8, 2)")
+        assert sql.startswith('ALTER TABLE "post" ALTER COLUMN "amount" TYPE NUMERIC(8, 2)')
 
     def test_sql_type_uuid_ulid_override(self) -> None:
         import nextorm.fields as _fields
@@ -1185,9 +1187,9 @@ class TestMariaDBRendererStatements:
             ],
         )
         sql = self.r.create_table(table)
-        assert "CREATE TABLE IF NOT EXISTS post" in sql
-        assert "id INT AUTO_INCREMENT PRIMARY KEY" in sql
-        assert "title TEXT NOT NULL" in sql
+        assert "CREATE TABLE IF NOT EXISTS `post`" in sql
+        assert "`id` INT AUTO_INCREMENT PRIMARY KEY" in sql
+        assert "`title` TEXT NOT NULL" in sql
 
     def test_create_table_pk_without_auto_increment(self) -> None:
         table = Table(
@@ -1205,7 +1207,9 @@ class TestMariaDBRendererStatements:
             foreign_keys=[ForeignKey("fk_comment__post_id", "post_id", "post")],
         )
         sql = self.r.create_table(table)
-        assert "CONSTRAINT fk_comment__post_id FOREIGN KEY (post_id) REFERENCES post (id)" in sql
+        assert (
+            "CONSTRAINT fk_comment__post_id FOREIGN KEY (`post_id`) REFERENCES `post` (`id`)" in sql
+        )
 
     def test_create_table_unique_column(self) -> None:
         table = Table(name="t", columns=[Column("email", str, unique=True, nullable=False)])
@@ -1221,23 +1225,23 @@ class TestMariaDBRendererStatements:
         assert "DEFAULT CURRENT_TIMESTAMP" in sql
 
     def test_drop_table(self) -> None:
-        assert self.r.drop_table("post") == "DROP TABLE IF EXISTS post"
+        assert self.r.drop_table("post") == "DROP TABLE IF EXISTS `post`"
 
     def test_add_column(self) -> None:
         col = Column("body", str, nullable=True)
-        assert self.r.add_column("post", col) == "ALTER TABLE post ADD COLUMN body TEXT"
+        assert self.r.add_column("post", col) == "ALTER TABLE `post` ADD COLUMN `body` TEXT"
 
     def test_drop_column(self) -> None:
-        assert self.r.drop_column("post", "body") == "ALTER TABLE post DROP COLUMN body"
+        assert self.r.drop_column("post", "body") == "ALTER TABLE `post` DROP COLUMN `body`"
 
     def test_create_index(self) -> None:
         idx = Index("idx_post__title", ["title"])
-        assert self.r.create_index("post", idx) == "CREATE INDEX idx_post__title ON post (title)"
+        assert self.r.create_index("post", idx) == "CREATE INDEX idx_post__title ON `post` (`title`)"
 
     def test_create_unique_index(self) -> None:
         idx = Index("unq_post__slug", ["slug"], unique=True)
         sql = self.r.create_index("post", idx)
-        assert sql == "CREATE UNIQUE INDEX unq_post__slug ON post (slug)"
+        assert sql == "CREATE UNIQUE INDEX unq_post__slug ON `post` (`slug`)"
 
     def test_render_drop_index_includes_table(self) -> None:
         op: SchemaOp = DropIndex(table_name="post", index_name="idx_post__title")
@@ -1246,16 +1250,16 @@ class TestMariaDBRendererStatements:
 
     def test_render_delegates_non_drop_index(self) -> None:
         op: SchemaOp = DropTable(table_name="post")
-        assert self.r.render(op) == "DROP TABLE IF EXISTS post"
+        assert self.r.render(op) == "DROP TABLE IF EXISTS `post`"
 
     def test_drop_column_with_if_exists(self) -> None:
         sql = self.r.drop_column("post", "body")
-        assert sql == "ALTER TABLE post DROP COLUMN body"
+        assert sql == "ALTER TABLE `post` DROP COLUMN `body`"
 
     def test_alter_column_type_returns_statement(self) -> None:
         col = Column("amount", decimal.Decimal, precision=8, scale=2, nullable=False)
         sql = self.r.alter_column_type("post", col)
-        assert sql.startswith("ALTER TABLE post MODIFY COLUMN amount DECIMAL(8, 2) NOT NULL")
+        assert sql.startswith("ALTER TABLE `post` MODIFY COLUMN `amount` DECIMAL(8, 2) NOT NULL")
 
     def test_sql_type_uuid_ulid_override(self) -> None:
         import nextorm.fields as _fields
@@ -1327,7 +1331,7 @@ class TestCompositeConstraints:
         idx = next(i for i in table.indexes if i.unique)
         sql = r.create_index(table.name, idx)
         assert "UNIQUE INDEX" in sql
-        assert "slot, room" in sql
+        assert '"slot", "room"' in sql
 
     def test_composite_index_ddl_sqlite(self) -> None:
         r = SQLiteRenderer()
@@ -1335,7 +1339,7 @@ class TestCompositeConstraints:
         idx = next(i for i in table.indexes if not i.unique)
         sql = r.create_index(table.name, idx)
         assert "UNIQUE" not in sql
-        assert "source, level" in sql
+        assert '"source", "level"' in sql
 
     def test_composite_key_in_build_schema(self) -> None:
         tables = build_schema([Booking])
@@ -1349,7 +1353,7 @@ class TestCompositeConstraints:
         idx = next(i for i in table.indexes if i.unique)
         sql = r.create_index(table.name, idx)
         assert "UNIQUE INDEX" in sql
-        assert "slot, room" in sql
+        assert '"slot", "room"' in sql
 
     def test_composite_key_ddl_mariadb(self) -> None:
         r = MariaDBRenderer()
@@ -1357,7 +1361,7 @@ class TestCompositeConstraints:
         idx = next(i for i in table.indexes if i.unique)
         sql = r.create_index(table.name, idx)
         assert "UNIQUE INDEX" in sql
-        assert "slot, room" in sql
+        assert "`slot`, `room`" in sql
 
     def test_constraints_stored_on_entity_class(self) -> None:
         assert len(Booking._constraints_) == 1
@@ -1702,14 +1706,14 @@ class TestANNIndex:
     def test_postgres_ivfflat_no_opclass(self) -> None:
         idx = Index("idx_emb_ivf", ["embedding"], method="ivfflat")
         sql = PostgresRenderer().create_index("article", idx)
-        assert "USING ivfflat (embedding)" in sql
+        assert 'USING ivfflat ("embedding")' in sql
         assert "WITH" not in sql
 
     def test_postgres_btree_explicit_stays_standard(self) -> None:
         idx = Index("idx_title", ["title"], method="btree")
         sql = PostgresRenderer().create_index("post", idx)
         assert "USING" not in sql
-        assert sql == "CREATE INDEX IF NOT EXISTS idx_title ON post (title)"
+        assert sql == 'CREATE INDEX IF NOT EXISTS idx_title ON "post" ("title")'
 
     def test_postgres_no_method_stays_standard(self) -> None:
         idx = Index("idx_title", ["title"])
@@ -1827,32 +1831,32 @@ class TestAlterColumnTypeDDL:
     def test_postgres_alter_column_type_nullable(self) -> None:
         col = Column("age", str, nullable=True)
         stmt = PostgresRenderer().alter_column_type("user", col)
-        assert stmt == "ALTER TABLE user ALTER COLUMN age TYPE TEXT"
+        assert stmt == 'ALTER TABLE "user" ALTER COLUMN "age" TYPE TEXT'
 
     def test_postgres_alter_column_type_not_null(self) -> None:
         col = Column("age", int, nullable=False)
         stmt = PostgresRenderer().alter_column_type("post", col)
-        assert stmt == "ALTER TABLE post ALTER COLUMN age TYPE INTEGER NOT NULL"
+        assert stmt == 'ALTER TABLE "post" ALTER COLUMN "age" TYPE INTEGER NOT NULL'
 
     def test_postgres_alter_column_type_varchar(self) -> None:
         col = Column("email", str, max_len=255, nullable=False)
         stmt = PostgresRenderer().alter_column_type("account", col)
-        assert "ALTER COLUMN email TYPE VARCHAR(255) NOT NULL" in stmt
+        assert 'ALTER COLUMN "email" TYPE VARCHAR(255) NOT NULL' in stmt
 
     def test_mariadb_modify_column_nullable(self) -> None:
         col = Column("age", str, nullable=True)
         stmt = MariaDBRenderer().alter_column_type("user", col)
-        assert stmt == "ALTER TABLE user MODIFY COLUMN age TEXT"
+        assert stmt == "ALTER TABLE `user` MODIFY COLUMN `age` TEXT"
 
     def test_mariadb_modify_column_not_null(self) -> None:
         col = Column("age", int, nullable=False)
         stmt = MariaDBRenderer().alter_column_type("post", col)
-        assert stmt == "ALTER TABLE post MODIFY COLUMN age INT NOT NULL"
+        assert stmt == "ALTER TABLE `post` MODIFY COLUMN `age` INT NOT NULL"
 
     def test_mariadb_modify_column_varchar(self) -> None:
         col = Column("name", str, max_len=80, nullable=False)
         stmt = MariaDBRenderer().alter_column_type("profile", col)
-        assert "MODIFY COLUMN name VARCHAR(80) NOT NULL" in stmt
+        assert "MODIFY COLUMN `name` VARCHAR(80) NOT NULL" in stmt
 
 
 class TestAlterColumnTypeRenderDispatch:
@@ -1866,12 +1870,12 @@ class TestAlterColumnTypeRenderDispatch:
     def test_postgres_render_dispatch(self) -> None:
         op: SchemaOp = AlterColumnType(table_name="t", column=Column("x", int, nullable=False))
         result = PostgresRenderer().render(op)
-        assert result == "ALTER TABLE t ALTER COLUMN x TYPE INTEGER NOT NULL"
+        assert result == 'ALTER TABLE "t" ALTER COLUMN "x" TYPE INTEGER NOT NULL'
 
     def test_mariadb_render_dispatch(self) -> None:
         op: SchemaOp = AlterColumnType(table_name="t", column=Column("x", int, nullable=False))
         result = MariaDBRenderer().render(op)
-        assert result == "ALTER TABLE t MODIFY COLUMN x INT NOT NULL"
+        assert result == "ALTER TABLE `t` MODIFY COLUMN `x` INT NOT NULL"
 
 
 # ---------------------------------------------------------------------------
@@ -2081,3 +2085,261 @@ def test_m2m_columns_list_overrides_join_column_a() -> None:
     join_t = next(iter(join_tables.values()))
     col_names = {c.name for c in join_t.columns}
     assert "left_multi_id" in col_names
+
+
+# ---------------------------------------------------------------------------
+# O2O with explicit reverse parameter (build_schema lines 257-317)
+# ---------------------------------------------------------------------------
+
+
+class _RevPassport(Entity):
+    """Owning side of an O2O with explicit reverse."""
+
+    number: Req[str]
+    holder: Single[_RevHolder] = Single(reverse="passport", nullable=False)
+
+
+class _RevHolder(Entity):
+    """Non-owning side of an O2O with explicit reverse."""
+
+    name: Req[str]
+    passport: Single[_RevPassport] = Single(reverse="holder", nullable=True)
+
+
+class _RevEmployeeA(Entity):
+    """Employee side of a mutual Single-Single O2O with owner flag."""
+
+    code: Req[str]
+    profile: Single[_RevProfileA] = Single(reverse="employee", nullable=True, owner=False)
+
+
+class _RevProfileA(Entity):
+    """Profile side of a mutual Single-Single O2O."""
+
+    bio: Req[str]
+    employee: Single[_RevEmployeeA] = Single(reverse="profile", nullable=False, owner=True)
+
+
+def test_o2o_with_explicit_reverse_owning_side_gets_fk() -> None:
+    """O2O pair with reverse= parameter: non-nullable side is owning (has FK column)."""
+    tables = build_schema([_RevPassport, _RevHolder])
+    # _RevPassport is the non-nullable Single → should be the owning side
+    passport_table = tables["_revpassport"]
+    holder_col_names = [c.name for c in passport_table.columns]
+    assert "holder_id" in holder_col_names
+
+    # _RevHolder has nullable Single → non-owning side (no FK column for passport)
+    holder_table = tables["_revholder"]
+    holder_col_names2 = [c.name for c in holder_table.columns]
+    assert "passport_id" not in holder_col_names2
+
+
+def test_o2o_with_explicit_reverse_owner_flag() -> None:
+    """O2O pair with owner=True/False flags controls which side has the FK column."""
+    tables = build_schema([_RevEmployeeA, _RevProfileA])
+    # _RevProfileA has owner=True → its side gets the FK column
+    profile_table = tables["_revprofilea"]
+    profile_col_names = [c.name for c in profile_table.columns]
+    assert "employee_id" in profile_col_names
+
+    # _RevEmployeeA has owner=False → does NOT get a FK column
+    emp_table = tables["_revemployeea"]
+    emp_col_names = [c.name for c in emp_table.columns]
+    assert "profile_id" not in emp_col_names
+
+
+class _RevSingleSetOwner(Entity):
+    """Many-to-one side with explicit reverse pointing to the Set."""
+
+    tag: Req[str]
+    group: Single[_RevSetGroup] = Single(reverse="members")
+
+
+class _RevSetGroup(Entity):
+    """One-to-many side with a Set collection."""
+
+    name: Req[str]
+    members: Set[_RevSingleSetOwner]
+
+
+def test_single_set_pair_with_explicit_reverse() -> None:
+    """Single-Set pair with explicit reverse= on the Single side is M2O (not O2O)."""
+    tables = build_schema([_RevSingleSetOwner, _RevSetGroup])
+    # Single side (_RevSingleSetOwner) is owning → has FK column
+    owner_table = tables["_revsinglesetowner"]
+    col_names = [c.name for c in owner_table.columns]
+    # Single side has the FK to the group
+    assert "group_id" in col_names
+
+
+# ---------------------------------------------------------------------------
+# schema/builder.py lines 297-298: explicit reverse= O2O where a_ri.spec.owner is True
+# When the FIRST processed entity has owner=True, lines 297-298 are hit.
+# ---------------------------------------------------------------------------
+
+
+def test_o2o_with_explicit_reverse_a_is_owner_true() -> None:
+    """O2O with reverse=: processing the owner=True entity first hits lines 297-298.
+
+    _RevProfileA (owner=True) is listed first, so it becomes 'a' in the builder.
+    Condition: a_ri.spec.owner is True → lines 297-298.
+    """
+    tables = build_schema([_RevProfileA, _RevEmployeeA])
+    # _RevProfileA has owner=True → its side gets the FK column
+    profile_table = tables["_revprofilea"]
+    profile_col_names = [c.name for c in profile_table.columns]
+    assert "employee_id" in profile_col_names
+
+    emp_table = tables["_revemployeea"]
+    emp_col_names = [c.name for c in emp_table.columns]
+    assert "profile_id" not in emp_col_names
+
+
+# ---------------------------------------------------------------------------
+# schema/builder.py lines 305-307: explicit reverse= O2O where a_ri.spec.nullable
+# and not b_ri.spec.nullable
+# When the FIRST processed entity has nullable=True and second has nullable=False, lines 305-307 hit.
+# ---------------------------------------------------------------------------
+
+
+def test_o2o_with_explicit_reverse_a_nullable_b_not() -> None:
+    """O2O with reverse=: nullable a, non-nullable b → b is owner (lines 305-307).
+
+    Process _RevHolder first (nullable passport), _RevPassport second (non-nullable holder).
+    Condition: a_ri.spec.nullable and not b_ri.spec.nullable → owner=b (_RevPassport).
+    """
+    tables = build_schema([_RevHolder, _RevPassport])
+    # _RevPassport is non-nullable → it becomes the owner (has FK column)
+    passport_table = tables["_revpassport"]
+    passport_col_names = [c.name for c in passport_table.columns]
+    assert "holder_id" in passport_col_names
+
+    holder_table = tables["_revholder"]
+    holder_col_names = [c.name for c in holder_table.columns]
+    assert "passport_id" not in holder_col_names
+
+
+# ---------------------------------------------------------------------------
+# schema/builder.py lines 308-313: explicit reverse= O2O — alphabetical fallback
+# When both sides are nullable and no owner= is set, alphabetical order decides.
+# ---------------------------------------------------------------------------
+
+
+class _AAlphaRevA(Entity):
+    """First alphabetically — mutual reverse O2O, both nullable."""
+
+    _table_ = "_a_alpha_rev_a"
+    note: Req[str]
+    partner: Single["_ZAlphaRevB"] = Single(reverse="peer", nullable=True)  # noqa: UP037
+
+
+class _ZAlphaRevB(Entity):
+    """Second alphabetically — mutual reverse O2O, both nullable."""
+
+    _table_ = "_z_alpha_rev_b"
+    note: Req[str]
+    peer: Single["_AAlphaRevA"] = Single(reverse="partner", nullable=True)  # noqa: UP037
+
+
+def test_o2o_explicit_reverse_alphabetical_a_first_is_owner() -> None:
+    """O2O with reverse= and same nullability: alphabetically-first table owns FK (lines 308-310).
+
+    Both entities nullable, no owner= set. 'a_alpha_rev_a' < 'z_alpha_rev_b' alphabetically
+    → a is owner → lines 308-310 (elif a_name <= b_name).
+    """
+    tables = build_schema([_AAlphaRevA, _ZAlphaRevB])
+    a_table = tables["_a_alpha_rev_a"]
+    a_col_names = [c.name for c in a_table.columns]
+    # _a_alpha_rev_a is alphabetically first → owns FK
+    assert "partner_id" in a_col_names
+
+    z_table = tables["_z_alpha_rev_b"]
+    z_col_names = [c.name for c in z_table.columns]
+    assert "peer_id" not in z_col_names
+
+
+def test_o2o_explicit_reverse_alphabetical_z_first_processed() -> None:
+    """O2O with reverse= and same nullability: Z processed first → else branch (lines 311-313).
+
+    Both entities nullable, no owner= set. When _ZAlphaRevB is listed first (a=Z, b=A),
+    a_name='_z_alpha_rev_b' > b_name='_a_alpha_rev_a' → else → lines 311-313: b is owner.
+    """
+    tables = build_schema([_ZAlphaRevB, _AAlphaRevA])
+    a_table = tables["_a_alpha_rev_a"]
+    a_col_names = [c.name for c in a_table.columns]
+    # _a_alpha_rev_a is alphabetically first → owns FK (b wins in else branch)
+    assert "partner_id" in a_col_names
+
+
+# ---------------------------------------------------------------------------
+# schema/builder.py line 258->320: reverse= set but target has no matching relation name
+# ---------------------------------------------------------------------------
+
+
+class _BadReverseOwner(Entity):
+    """Entity with reverse= pointing to nonexistent relation name on target."""
+
+    _table_ = "_bad_reverse_owner"
+    name: Req[str]
+    ref: Single["_BadReverseTarget"] = Single(reverse="nonexistent", nullable=True)  # noqa: UP037
+
+
+class _BadReverseTarget(Entity):
+    """Target entity with no 'nonexistent' relation."""
+
+    _table_ = "_bad_reverse_target"
+    label: Req[str]
+
+
+def test_o2o_explicit_reverse_not_found_falls_through_to_autodetect() -> None:
+    """reverse= pointing to nonexistent relation → back_ri=None → falls to auto-detect.
+
+    _BadReverseOwner.ref has reverse='nonexistent' but _BadReverseTarget has no such relation.
+    The if back_ri: condition is False → branches to the fallback auto-detection (line 258->320).
+    """
+    tables = build_schema([_BadReverseOwner, _BadReverseTarget])
+    # _BadReverseTarget has no Single back-relation → _BadReverseOwner is plain M2O owner
+    owner_table = tables["_bad_reverse_owner"]
+    col_names = [c.name for c in owner_table.columns]
+    assert "ref_id" in col_names
+
+
+# ---------------------------------------------------------------------------
+# schema/builder.py line 277->320: back_ri found via reverse= but it's SINGLE pointing
+# to a DIFFERENT entity (not entity_cls) → falls through to auto-detect
+# ---------------------------------------------------------------------------
+
+
+class _CrossRevC(Entity):
+    """Third entity — cross-reference target (not the auto-detect owner)."""
+
+    _table_ = "_cross_rev_c"
+    name: Req[str]
+
+
+class _CrossRevB(Entity):
+    """Has a SINGLE pointing to C (not A), but A's reverse= points here."""
+
+    _table_ = "_cross_rev_b"
+    cross_ref: Single[_CrossRevC]  # points to C, NOT back to A
+
+
+class _CrossRevA(Entity):
+    """Points to B with reverse='cross_ref', but B.cross_ref points to C, not A."""
+
+    _table_ = "_cross_rev_a"
+    name: Req[str]
+    ref: Single[_CrossRevB] = Single(reverse="cross_ref", nullable=True)  # noqa: F821
+
+
+def test_o2o_explicit_reverse_cross_reference_falls_through() -> None:
+    """reverse= finds back_ri but it's SINGLE pointing to different entity → line 277->320.
+
+    _CrossRevA.ref has reverse='cross_ref'. _CrossRevB.cross_ref is found but points to C, not A.
+    Condition: back_ri.spec.kind == SINGLE and _target_matches(back_ri.target, entity_cls) → False
+    → falls through to auto-detect (line 277->320). Since B has no Single back to A, A is plain M2O.
+    """
+    tables = build_schema([_CrossRevA, _CrossRevB, _CrossRevC])
+    owner_table = tables["_cross_rev_a"]
+    col_names = [c.name for c in owner_table.columns]
+    assert "ref_id" in col_names

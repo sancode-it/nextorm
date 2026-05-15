@@ -15,7 +15,7 @@ Usage::
 
 from __future__ import annotations
 
-from collections.abc import Iterator  # noqa: TC003
+from collections.abc import Callable, Iterable, Iterator  # noqa: TC003
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 __all__ = ["RelatedCollection"]
 
 
-class RelatedCollection[T: Entity]:
+class RelatedCollection[ET: Entity]:
     """A lazy, database-backed collection representing one side of a relation.
 
     Instances are created by :class:`~nextorm.entity.SetDescriptor` on
@@ -58,7 +58,7 @@ class RelatedCollection[T: Entity]:
         self._owner = owner
         self._ri = ri
         self._db = db
-        self._cache: list[T] | None = None
+        self._cache: list[ET] | None = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -95,12 +95,25 @@ class RelatedCollection[T: Entity]:
         return cast("type[Entity]", resolved)
 
     def _is_m2m(self) -> bool:
-        """Return True when the relation is many-to-many (join table exists)."""
+        """Return True when the relation is many-to-many (join table exists).
+
+        A relation is M2M when both sides carry a Set pointing at each other.
+        When ``reverse`` is declared we check only that specific back-reference
+        to avoid false positives when the target entity happens to have another
+        unrelated Set pointing at the owner (e.g. User has both Set[Shop]
+        via 'owner' and Set[Shop] via 'followers').
+        """
         from nextorm.entity import _matches_entity  # noqa: PLC0415
         from nextorm.fields import RelationKind  # noqa: PLC0415
 
         target_cls = self._resolve_target()
         owner_cls = type(self._owner)
+        reverse_name = getattr(self._ri.spec, "reverse", None)
+        if reverse_name is not None:
+            back_ri = target_cls._relations_.get(reverse_name)
+            if back_ri is not None:
+                return back_ri.spec.kind == RelationKind.SET
+        # Fallback: check if any Set on target points back at the owner.
         return any(
             r.spec.kind == RelationKind.SET and _matches_entity(r.spec.target, owner_cls)
             for r in target_cls._relations_.values()
@@ -112,11 +125,21 @@ class RelatedCollection[T: Entity]:
         target_table = target_cls._table_name_
         return "_".join(sorted([owner_table, target_table]))
 
-    def _build_queryset(self) -> QuerySet[T]:
+    def _target_pk_col(self) -> str:
+        """Return the actual PK column name for the target entity."""
+        from nextorm.entity import _pk_col_for_field  # noqa: PLC0415
+
+        target_cls = self._resolve_target()
+        pk_fields: tuple[str, ...] = getattr(target_cls, "_pk_fields_", ())
+        if not pk_fields:
+            return "id"
+        return _pk_col_for_field(target_cls, pk_fields[0])
+
+    def _build_queryset(self) -> QuerySet[ET]:
         """Return a :class:`~nextorm.query.QuerySet` scoped to this collection."""
         db = self._require_db()
         target_cls = self._resolve_target()
-        qs: QuerySet[T] = db.select(target_cls)  # type: ignore[arg-type]
+        qs: QuerySet[ET] = db.select(target_cls)  # type: ignore[arg-type]
 
         if self._is_m2m():
             # M2M — join through the join table
@@ -124,13 +147,15 @@ class RelatedCollection[T: Entity]:
             owner_table = type(self._owner)._table_name_
             owner_pk = self._owner_pk()
             target_table = target_cls._table_name_
+            # Use the actual PK column of the target entity (may not be 'id')
+            target_pk_col = self._target_pk_col()
 
             from nextorm.sql.nodes import BinOp, ColumnRef, Param  # noqa: PLC0415
 
-            # SELECT target.* FROM target JOIN <join> ON target.id = <join>.target_id
+            # SELECT target.* FROM target JOIN <join> ON target.<pk> = <join>.target_id
             # WHERE <join>.owner_id = <pk>
             join_cond = BinOp(
-                ColumnRef("id", target_table),
+                ColumnRef(target_pk_col, target_table),
                 "=",
                 ColumnRef(f"{target_table}_id", join_table),
             )
@@ -143,7 +168,6 @@ class RelatedCollection[T: Entity]:
         else:
             # O2M — filter by FK column on target side
             owner_cls = type(self._owner)
-            owner_table = owner_cls._table_name_
             owner_pk = self._owner_pk()
 
             # Find the Single back-ref on target pointing at us
@@ -165,12 +189,30 @@ class RelatedCollection[T: Entity]:
                     f"{target_cls.__name__} pointing at {owner_cls.__name__}. "
                     "Ensure a Single[...] attribute is declared on the target."
                 )
-            fk_col = f"{back_ref.name}_id"
+
             from nextorm.sql.nodes import BinOp, ColumnRef, Param  # noqa: PLC0415
 
+            # For composite-PK owners, the FK on the target has multiple columns.
+            if isinstance(owner_pk, tuple):
+                from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+
+                fk_col_names = _derive_composite_fk_cols(back_ref.name, owner_cls)
+                if len(fk_col_names) == len(owner_pk):  # pyright: ignore[reportUnknownArgumentType]
+                    # Build AND of individual column conditions
+                    cond: BinOp = BinOp(ColumnRef(fk_col_names[0]), "=", Param(value=owner_pk[0]))
+                    for col_name, pk_part in zip(fk_col_names[1:], owner_pk[1:], strict=False):  # pyright: ignore[reportUnknownArgumentType, reportUnknownVariableType]
+                        cond = BinOp(
+                            cond,
+                            "AND",
+                            BinOp(ColumnRef(col_name), "=", Param(value=pk_part)),  # pyright: ignore[reportUnknownArgumentType]
+                        )
+                    return qs.filter(cond)
+
+            # Simple (single-column) FK
+            fk_col = back_ref.spec.column or f"{back_ref.name}_id"
             return qs.filter(BinOp(ColumnRef(fk_col), "=", Param(value=owner_pk)))
 
-    def _ensure_loaded(self) -> list[T]:
+    def _ensure_loaded(self) -> list[ET]:
         """Load all items into the cache and return it."""
         if self._cache is None:
             self._cache = self._build_queryset().fetch_all()
@@ -184,7 +226,7 @@ class RelatedCollection[T: Entity]:
     # Sequence-like interface
     # ------------------------------------------------------------------
 
-    def __iter__(self) -> Iterator[T]:
+    def __iter__(self) -> Iterator[ET]:
         """Iterate over all related objects, loading them from the database if necessary."""
         yield from self._ensure_loaded()
 
@@ -276,31 +318,107 @@ class RelatedCollection[T: Entity]:
         """Return ``True`` if the collection has no items."""
         return not self._build_queryset().exists()
 
-    def copy(self) -> set[T]:
+    def copy(self) -> set[ET]:
         """Return a plain Python ``set`` of all loaded items."""
         return set(self._ensure_loaded())
 
-    def load(self) -> list[T]:
+    def load(self) -> list[ET]:
         """Eagerly load all items and return them as a list."""
         return self._ensure_loaded()
 
-    def select(self) -> QuerySet[T]:
-        """Return a :class:`~nextorm.query.QuerySet` scoped to this collection."""
-        return self._build_queryset()
+    def filter(self, *conditions: Any, **kwargs: Any) -> QuerySet[ET]:
+        """Return a filtered :class:`~nextorm.query.QuerySet` for this collection.
 
-    def filter(self, *conditions: Any) -> QuerySet[T]:
-        """Return a filtered :class:`~nextorm.query.QuerySet` for this collection."""
-        return self._build_queryset().filter(*conditions)
+        Accepts :class:`~nextorm.sql.nodes.SqlNode` conditions and keyword
+        equality shortcuts.  For lambda predicates use :meth:`where` instead:
 
-    def order_by(self, *items: Any) -> QuerySet[T]:
+        .. code-block:: python
+
+            post.comments.filter(Comment.approved == True)
+            post.comments.filter(approved=True)
+            post.comments.filter(Comment.score > 5, approved=True)
+        """
+        from nextorm.sql.nodes import BinOp, ColumnRef, Param
+
+        qs = self._build_queryset()
+        for cond in conditions:
+            qs = qs.filter(cond)
+        for field, value in kwargs.items():
+            qs = qs.filter(BinOp(ColumnRef(field), "=", Param(value=value)))
+        return qs
+
+    def where(self, predicate: Callable[[Any], Any]) -> QuerySet[ET]:
+        """Narrow results using a lambda predicate over a column proxy.
+
+        The lambda receives a proxy whose attribute accesses return
+        :class:`~nextorm.expr.ColumnExpr` objects, so comparison operators
+        build SQL conditions transparently.  M2M containment and boolean
+        attribute checks are also supported via bytecode decompilation:
+
+        .. code-block:: python
+
+            post.comments.where(lambda c: c.approved == True)
+            post.comments.where(lambda c: c.score > 5)
+        """
+        from nextorm.generators import _apply_predicate  # noqa: PLC0415
+
+        qs = self._build_queryset()
+        target_cls = self._resolve_target()
+        return _apply_predicate(qs, predicate, target_cls)  # type: ignore[no-any-return]
+
+    def select(
+        self,
+        predicate: Callable[[Any], Any] | None = None,
+        /,
+        *conditions: Any,
+        **kwargs: Any,
+    ) -> QuerySet[ET]:
+        """Return a :class:`~nextorm.query.QuerySet` for this collection.
+
+        Accepts the same optional arguments as :meth:`~nextorm.entity.Entity.select`:
+        an optional lambda *predicate*, positional :class:`~nextorm.sql.nodes.SqlNode`
+        *conditions*, and keyword equality *kwargs* — all combined with ``AND``:
+
+        .. code-block:: python
+
+            # Whole collection (no filter)
+            post.comments.select()
+
+            # Lambda predicate
+            post.comments.select(lambda c: c.approved == True)
+
+            # SqlNode conditions
+            post.comments.select(Comment.approved == True)
+
+            # Keyword equality shortcuts
+            post.comments.select(approved=True)
+
+            # All combined
+            post.comments.select(lambda c: c.score > 5, Comment.approved == True, spam=False)
+        """
+        from nextorm.sql.nodes import BinOp, ColumnRef, Param  # noqa: PLC0415
+
+        qs = self._build_queryset()
+        if predicate is not None:
+            from nextorm.generators import _apply_predicate  # noqa: PLC0415
+
+            target_cls = self._resolve_target()
+            qs = _apply_predicate(qs, predicate, target_cls)  # pyright: ignore[reportUnknownMemberType,reportReturnType]
+        for cond in conditions:
+            qs = qs.filter(cond)
+        for field, value in kwargs.items():
+            qs = qs.filter(BinOp(ColumnRef(field), "=", Param(value=value)))
+        return qs
+
+    def order_by(self, *items: Any) -> QuerySet[ET]:
         """Return an ordered :class:`~nextorm.query.QuerySet` for this collection."""
         return self._build_queryset().order_by(*items)
 
-    def page(self, pagenum: int, pagesize: int = 10) -> QuerySet[T]:
+    def page(self, pagenum: int, pagesize: int = 10) -> QuerySet[ET]:
         """Return a page of this collection's items (1-based page numbers)."""
         return self._build_queryset().page(pagenum, pagesize)
 
-    def random(self, n: int) -> QuerySet[T]:
+    def random(self, n: int) -> QuerySet[ET]:
         """Return *n* randomly selected items from this collection."""
         return self._build_queryset().random(n)
 
@@ -308,7 +426,7 @@ class RelatedCollection[T: Entity]:
     # Mutation methods
     # ------------------------------------------------------------------
 
-    def add(self, *items: T) -> None:
+    def add(self, *items: ET) -> None:
         """Add one or more items to this collection.
 
         For M2M: inserts rows into the join table.
@@ -360,12 +478,25 @@ class RelatedCollection[T: Entity]:
 
         self._invalidate()
 
-    def remove(self, *items: T) -> None:
+    def remove(self, *items: ET | Iterable[ET]) -> None:
         """Remove one or more items from this collection.
+
+        Accepts either individual items or an iterable of items::
+
+            collection.remove(item1, item2)  # Individual items
+            collection.remove([item1, item2])  # List or other iterable of items
 
         For M2M: deletes rows from the join table.
         For O2M: sets the FK column to NULL (requires nullable FK).
         """
+        # Flatten items: accept both individual args and iterables
+        flat_items: list[ET] = []
+        for item in items:
+            if isinstance(item, (list, tuple)):
+                flat_items.extend(cast("Iterable[ET]", item))
+            else:
+                flat_items.append(cast("ET", item))
+
         db = self._require_db()
         owner_pk = self._owner_pk()
         owner_cls = type(self._owner)
@@ -382,7 +513,7 @@ class RelatedCollection[T: Entity]:
             owner_col = f"{owner_table}_id"
             target_col = f"{target_table}_id"
             assert db._builder is not None
-            for item in items:
+            for item in flat_items:
                 item_pk = _gpv(item)
                 stmt = Delete(
                     table=join_table,
@@ -399,24 +530,28 @@ class RelatedCollection[T: Entity]:
             from nextorm.entity import _matches_entity as _me  # noqa: PLC0415
             from nextorm.fields import RelationKind  # noqa: PLC0415
 
+            # Find any Single back-reference (nullable or not) on the target
             back_ref = next(
                 (
                     r
                     for r in target_cls._relations_.values()
-                    if r.spec.kind == RelationKind.SINGLE
-                    and r.spec.nullable
-                    and _me(r.spec.target, owner_cls)
+                    if r.spec.kind == RelationKind.SINGLE and _me(r.spec.target, owner_cls)
                 ),
                 None,
             )
             if back_ref is None:
                 raise RuntimeError(
-                    f"Cannot remove from {self._ri.name}: no nullable Single "
-                    "back-reference found. Declare Single[...| None] on the target."
+                    f"Cannot remove from {self._ri.name}: no Single "
+                    "back-reference found on the target entity."
                 )
-            for item in items:
-                setattr(item, back_ref.name, None)
-                db.save(item)
+            for item in flat_items:
+                if back_ref.spec.nullable:
+                    # Nullable FK: set to NULL
+                    setattr(item, back_ref.name, None)
+                    db.save(item)
+                else:
+                    # Required FK: item cannot exist without owner — delete it
+                    db.delete_instance(item)
 
         self._invalidate()
 
@@ -473,7 +608,37 @@ class RelatedCollection[T: Entity]:
 
         self._invalidate()
 
-    def create(self, **kwargs: Any) -> T:
+    def drop_table(self, *, with_all_data: bool = False) -> None:
+        """Drop the join table associated with this M2M collection.
+
+        Only valid for many-to-many relations. For one-to-many relations, use
+        the target entity's :meth:`~nextorm.entity.Entity.drop_table` method instead.
+
+        Parameters
+        ----------
+        with_all_data:
+            When ``False``, raises an error if the join table contains data.
+            When ``True``, drops the table regardless of content.
+
+        Raises :exc:`RuntimeError` if the relation is not M2M or if the join table
+        contains data and ``with_all_data`` is ``False``.
+
+        Example::
+
+            # For a many-to-many relation like: items = Set[OrderItem](...)
+            order.items.drop_table(with_all_data=True)
+        """
+        if not self._is_m2m():
+            raise RuntimeError(
+                f"drop_table() is only valid for many-to-many relations. "
+                f"Relation {self._ri.name} is one-to-many. "
+                f"Use {self._resolve_target().__name__}.drop_table() instead."
+            )
+        db = self._require_db()
+        join_table = self._join_table_name()
+        db.drop_table(join_table, if_exists=True, with_all_data=with_all_data)
+
+    def create(self, **kwargs: Any) -> ET:
         """Create a related entity and immediately link it to this collection.
 
         The entity is saved to the database first (to obtain a primary key),
@@ -481,7 +646,7 @@ class RelatedCollection[T: Entity]:
         """
         db = self._require_db()
         target_cls = self._resolve_target()
-        item: T = cast("T", target_cls(**kwargs))
+        item: ET = cast("ET", target_cls(**kwargs))
         # Save the item first so it gets a primary key (required for M2M join inserts
         # and for O2M where add() will UPDATE the FK column).
         db.save(item)

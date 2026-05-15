@@ -543,6 +543,62 @@ Either call the database method or the shortcut on the instance:
    database session so the ``_db_`` context attribute is set.  If you hold a
    bare constructed object, use ``db.delete_instance(entity)`` directly.
 
+Table management
+~~~~~~~~~~~~~~~~~
+
+NextORM exposes helpers for dropping and (re-)creating tables without writing
+raw DDL.  These are primarily useful for test tear-down and manual database
+maintenance.
+
+**Drop a single entity's table:**
+
+.. code-block:: python
+
+   # Raises RuntimeError if the table is not empty (default)
+   User.drop_table()
+
+   # Force-drop even if rows exist
+   User.drop_table(with_all_data=True)
+
+**Drop all tables mapped to a database:**
+
+.. code-block:: python
+
+   db.drop_all_tables(with_all_data=True)   # useful for test cleanup
+
+**Drop a table by name** (useful for join / auxiliary tables):
+
+.. code-block:: python
+
+   db.drop_table("user_tags", if_exists=True, with_all_data=True)
+
+**Drop the M2M join table via the collection attribute:**
+
+.. code-block:: python
+
+   with db_session:
+       post.tags.drop_table(with_all_data=True)   # M2M only — O2M raises RuntimeError
+
+**Re-create all entity tables** after they have been dropped:
+
+.. code-block:: python
+
+   db.drop_all_tables(with_all_data=True)
+   db.create_tables()    # idempotent — wraps CREATE TABLE IF NOT EXISTS
+
+**Disconnect the connection pool** (e.g. before deleting a SQLite file):
+
+.. code-block:: python
+
+   db.disconnect()       # closes all idle connections in the pool
+   os.remove("app.db")
+
+.. warning::
+   ``drop_table`` and ``drop_all_tables`` are **irreversible** destructive
+   operations.  Always confirm ``with_all_data=True`` intentionally or check
+   that the table is empty first by relying on the default ``with_all_data=False``
+   guard, which raises :exc:`RuntimeError` when rows are present.
+
 Looking up by primary key
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -562,14 +618,74 @@ Use the subscript shortcut or the query API interchangeably:
 Class-level lookups
 ~~~~~~~~~~~~~~~~~~~~
 
-:meth:`~nextorm.entity.Entity.get` and :meth:`~nextorm.entity.Entity.exists`
-match against one or more field values without explicitly passing a database:
+:meth:`~nextorm.entity.Entity.get`, :meth:`~nextorm.entity.Entity.exists`,
+and :meth:`~nextorm.entity.Entity.select` match against one or more field
+values without explicitly passing a database.  All three accept the same
+uniform calling convention:
+
+``method(predicate=None, *conditions: SqlNode, **kwargs)``
+
+All arguments are optional and can be freely combined:
+
+**No arguments** — return all rows (``select`` only):
+
+.. code-block:: python
+
+   users = User.select().order_by(User.name).fetch_all()
+
+**Keyword arguments** — simple column equality filters:
 
 .. code-block:: python
 
    user = User.get(email="alice@example.com")     # None if not found
    if User.exists(email="alice@example.com"):
        ...
+   admins = User.select(role="admin").fetch_all()
+
+**Positional SqlNode conditions** — direct column expressions:
+
+.. code-block:: python
+
+   user = User.get(User.age > 18)
+   adults = User.select(User.age >= 18).fetch_all()
+
+**Lambda predicate** — more expressive conditions using the same
+bytecode-decompiler that powers generator-expression queries:
+
+.. code-block:: python
+
+   user = User.get(lambda u: u.age > 18)
+   if User.exists(lambda u: u.active == True):
+       ...
+   active = User.select(lambda u: u.active).fetch_all()
+
+**All combined** — predicate, conditions, and kwargs together:
+
+.. code-block:: python
+
+   user = User.get(lambda u: u.age >= 18, User.active == True, role="admin")
+
+Closure variables (values captured from the enclosing scope) are resolved
+automatically:
+
+.. code-block:: python
+
+   min_age = 18
+   user = User.get(lambda u: u.age >= min_age)
+
+The async variants :meth:`~nextorm.entity.Entity.aget` and
+:meth:`~nextorm.entity.Entity.aselect` support the same calling convention:
+
+.. code-block:: python
+
+   user   = await User.aget(lambda u: u.email == email)
+   admins = await User.aselect(role="admin").fetch_all()
+   count  = await User.aselect(User.active == True).count()
+
+.. note::
+   Multi-level attribute access across relations (e.g.
+   ``lambda c: c.shop.slug == slug``) automatically generates the required
+   SQL ``JOIN`` chain.  There is no hard limit on chain depth.
 
 .. warning::
    These methods use :func:`~nextorm.entity._find_db_for_entity` to locate

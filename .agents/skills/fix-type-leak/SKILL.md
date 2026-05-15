@@ -91,12 +91,11 @@ Add the return type. Never use `Any` in a public signature:
 
 ```python
 # Bad
-def fetch_all(self):
-    ...
+def fetch_all(self): ...
+
 
 # Good
-def fetch_all(self) -> list[T]:
-    ...
+def fetch_all(self) -> list[T]: ...
 ```
 
 #### Incorrect generic parameter
@@ -109,9 +108,10 @@ new-style generics (`class QuerySet[T]:`) consistently:
 class QuerySet[T]:
     def get(self) -> T: ...
 
+
 # Good — if T must be an Entity subclass, bound it
-class QuerySet[T: Entity]:
-    def get(self) -> T: ...
+class QuerySet[ET: Entity]:
+    def get(self) -> ET: ...
 ```
 
 #### Missing overload for multi-signature methods
@@ -120,6 +120,7 @@ When a method can return different types based on arguments, use `@overload`:
 
 ```python
 from typing import overload
+
 
 @overload
 def select(self, entity: type[T]) -> QuerySet[T]: ...
@@ -169,8 +170,10 @@ can't re-introduce the regression:
 from typing import assert_type
 from nextorm import QuerySet, Entity
 
+
 class MyEntity(Entity):
     id = PK[int]
+
 
 db = Database(...)
 qs = db.select(MyEntity)

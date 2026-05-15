@@ -34,6 +34,13 @@ class Enrollment(Entity):
     _pk_ = PrimaryKey("student_id", "course_id")
 
 
+class GradeNote(Entity):
+    """FK to a composite-PK entity (Enrollment)."""
+
+    enrollment: Single[Enrollment]
+    note: Opt[str]
+
+
 class PurchaseOrder(Entity):
     ref: Req[str]
 
@@ -49,6 +56,18 @@ class OrderLine(Entity):
     product: Single[Product]
     quantity: Req[int]
     _pk_ = PrimaryKey("order", "product")
+
+
+class OrderLineSummary(Entity):
+    """FK to a relation-based-composite-PK entity (OrderLine).
+
+    Used to exercise the ``elif fname in relations`` branch of
+    ``_derive_composite_fk_cols`` when the PK fields of the target entity are
+    themselves relations.
+    """
+
+    order_line: Single[OrderLine]
+    comment: Opt[str]
 
 
 # ---------------------------------------------------------------------------
@@ -121,26 +140,26 @@ def test_entity_to_table_has_no_inline_primary_key_for_composite() -> None:
 def test_sqlite_ddl_has_table_level_primary_key() -> None:
     table = entity_to_table(Enrollment)
     sql = SQLiteRenderer().create_table(table)
-    assert "PRIMARY KEY (student_id, course_id)" in sql
+    assert 'PRIMARY KEY ("student_id", "course_id")' in sql
     # Inline PRIMARY KEY must not appear on individual column defs
     lines = sql.split("\n")
     col_lines = [
         col_line for col_line in lines if "student_id" in col_line or "course_id" in col_line
     ]
     for col_line in col_lines:
-        assert "PRIMARY KEY" not in col_line or "PRIMARY KEY (student_id," in col_line
+        assert "PRIMARY KEY" not in col_line or 'PRIMARY KEY ("student_id",' in col_line
 
 
 def test_postgres_ddl_has_table_level_primary_key() -> None:
     table = entity_to_table(Enrollment)
     sql = PostgresRenderer().create_table(table)
-    assert "PRIMARY KEY (student_id, course_id)" in sql
+    assert 'PRIMARY KEY ("student_id", "course_id")' in sql
 
 
 def test_mysql_ddl_has_table_level_primary_key() -> None:
     table = entity_to_table(Enrollment)
     sql = MariaDBRenderer().create_table(table)
-    assert "PRIMARY KEY (student_id, course_id)" in sql
+    assert "PRIMARY KEY (`student_id`, `course_id`)" in sql
 
 
 def test_relation_pk_fk_column_marked_primary_key() -> None:
@@ -155,7 +174,7 @@ def test_relation_pk_ddl_table_level_constraint() -> None:
     tables = build_schema([PurchaseOrder, Product, OrderLine])
     ol_table = tables["orderline"]
     sql = SQLiteRenderer().create_table(ol_table)
-    assert "PRIMARY KEY (order_id, product_id)" in sql
+    assert 'PRIMARY KEY ("order_id", "product_id")' in sql
 
 
 # ---------------------------------------------------------------------------
@@ -370,3 +389,225 @@ async def test_async_delete_relation_composite_pk() -> None:
         # FK-id fields should be cleared after async delete
         assert s.__dict__.get("_vendor_id") is None
         assert s.__dict__.get("_item_id") is None
+
+
+# ---------------------------------------------------------------------------
+# Composite FK: Single relation pointing to a composite-PK entity
+# ---------------------------------------------------------------------------
+
+
+def test_build_schema_composite_fk_columns() -> None:
+    """build_schema derives two FK columns for a Single pointing at Enrollment."""
+    schema = build_schema([Enrollment, GradeNote])
+    table = schema["gradenote"]
+    col_names = [c.name for c in table.columns]
+    assert "enrollment_student_id" in col_names
+    assert "enrollment_course_id" in col_names
+
+
+def test_insert_composite_fk_entity() -> None:
+    """Saving a GradeNote with a composite-PK FK writes both FK columns."""
+    db = Database(entities=[Enrollment, GradeNote])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    with db_session:
+        e = Enrollment(student_id=1, course_id=10, grade="A")
+        flush()
+        gn = GradeNote(note="great")
+        gn.enrollment = e
+
+    rows = db.select(GradeNote).fetch_all()
+    assert len(rows) == 1
+    assert rows[0].note == "great"
+    # FK tuple stored in __dict__
+    assert rows[0].__dict__.get("_enrollment_id") == (1, 10)
+    db.close()
+
+
+def test_fetch_composite_fk_entity() -> None:
+    """Fetching GradeNote builds composite FK tuple from two DB columns."""
+    db = Database(entities=[Enrollment, GradeNote])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    with db_session:
+        e = Enrollment(student_id=2, course_id=20, grade="B")
+        flush()
+        gn = GradeNote(note="ok")
+        gn.enrollment = e
+
+    loaded = db.select(GradeNote).fetch_one()
+    assert loaded is not None
+    assert loaded.__dict__.get("_enrollment_id") == (2, 20)
+    db.close()
+
+
+def test_lazy_load_composite_fk_entity() -> None:
+    """Accessing .enrollment on a GradeNote triggers lazy-load via tuple FK."""
+    db = Database(entities=[Enrollment, GradeNote])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    with db_session:
+        e = Enrollment(student_id=3, course_id=30, grade="C")
+        flush()
+        gn = GradeNote(note="lazy")
+        gn.enrollment = e
+
+    loaded = db.select(GradeNote).fetch_one()
+    assert loaded is not None
+    # Lazy-load via composite FK tuple
+    with db_session:
+        related = loaded.enrollment
+    assert related is not None
+    assert related.student_id == 3
+    assert related.course_id == 30
+    db.close()
+
+
+def test_update_composite_fk_entity() -> None:
+    """Updating GradeNote note re-writes both FK columns."""
+    db = Database(entities=[Enrollment, GradeNote])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    with db_session:
+        e = Enrollment(student_id=4, course_id=40, grade="D")
+        flush()
+        gn = GradeNote(note="first")
+        gn.enrollment = e
+
+    pk = gn.id
+    with db_session:
+        loaded = db.select(GradeNote).filter(GradeNote.id == pk).fetch_one()
+        assert loaded is not None
+        loaded.note = "revised"
+
+    result = db.select(GradeNote).filter(GradeNote.id == pk).fetch_one()
+    assert result is not None
+    assert result.note == "revised"
+    db.close()
+
+
+def test_entity_getitem_composite_pk_via_relation_based() -> None:
+    """Entity[pk] on OrderLine (relation-based composite PK) exercises _pk_col_for_field
+    through the 'fname in relations' branch."""
+    db = Database(entities=[PurchaseOrder, Product, OrderLine])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    with db_session:
+        o = PurchaseOrder(ref="REF-1")
+        p = Product(sku="SKU-Z")
+        flush()
+        line = OrderLine(quantity=5)
+        line.order = o
+        line.product = p
+
+    with db_session:
+        result = OrderLine[o.id, p.id]  # type: ignore[type-arg, name-defined]
+        assert result.quantity == 5
+
+    db.close()
+
+
+def test_build_schema_composite_fk_relation_based_pk() -> None:
+    """build_schema derives FK cols for Single pointing at relation-based composite PK.
+
+    Covers the ``elif fname in relations`` branch of ``_derive_composite_fk_cols``
+    where the target entity's PK fields are themselves relations.
+    """
+    schema = build_schema([PurchaseOrder, Product, OrderLine, OrderLineSummary])
+    table = schema["orderlinesummary"]
+    col_names = [c.name for c in table.columns]
+    # FK to OrderLine which has composite PK (order_id, product_id)
+    assert "order_line_order_id" in col_names
+    assert "order_line_product_id" in col_names
+
+
+def test_insert_composite_fk_relation_based_pk() -> None:
+    """Saving an OrderLineSummary with FK to relation-based-PK entity covers
+    the 'elif fname in relations' branch of _derive_composite_fk_cols (entity.py)
+    and also the __set__ relation-PK branch (vals.append(value.__dict__.get(...))).
+    """
+    db = Database(entities=[PurchaseOrder, Product, OrderLine, OrderLineSummary])
+    db.bind("sqlite", ":memory:")
+    db.generate_mapping(create_tables=True)
+
+    with db_session:
+        o = PurchaseOrder(ref="ORD-S")
+        p = Product(sku="SKU-S")
+        flush()
+        line = OrderLine(quantity=2)
+        line.order = o
+        line.product = p
+        flush()
+
+        summary = OrderLineSummary(comment="good")
+        summary.order_line = line  # covers __set__ with relation-based composite PK
+
+    rows = db.select(OrderLineSummary).fetch_all()
+    assert len(rows) == 1
+    assert rows[0].comment == "good"
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Async composite FK tests
+# ---------------------------------------------------------------------------
+
+
+class AsyncEnrollment(Entity):
+    student_id: Req[int]
+    course_id: Req[int]
+    _pk_ = PrimaryKey("student_id", "course_id")
+
+
+class AsyncGradeNote(Entity):
+    enrollment: Single[AsyncEnrollment]
+    note: Opt[str]
+
+
+@pytest.mark.asyncio
+async def test_async_insert_composite_fk_entity() -> None:
+    """Async insert of an entity with composite FK writes both FK columns."""
+    async with AsyncDatabase(entities=[AsyncEnrollment, AsyncGradeNote]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+
+        e = AsyncEnrollment(student_id=11, course_id=110)
+        await db.asave(e)
+
+        gn = AsyncGradeNote(note="async note")
+        gn.enrollment = e
+        await db.asave(gn)
+
+        rows = await db.aselect(AsyncGradeNote).fetch_all()
+        assert len(rows) == 1
+        assert rows[0].note == "async note"
+        assert rows[0].__dict__.get("_enrollment_id") == (11, 110)
+
+
+@pytest.mark.asyncio
+async def test_async_update_composite_fk_entity() -> None:
+    """Async update of an entity with composite FK updates FK-tracking columns."""
+    async with AsyncDatabase(entities=[AsyncEnrollment, AsyncGradeNote]) as db:
+        await db.bind("sqlite", ":memory:")
+        await db.generate_mapping(create_tables=True)
+
+        e = AsyncEnrollment(student_id=22, course_id=220)
+        await db.asave(e)
+        gn = AsyncGradeNote(note="before")
+        gn.enrollment = e
+        await db.asave(gn)
+
+        pk = gn.id
+        loaded = await db.aselect(AsyncGradeNote).filter(AsyncGradeNote.id == pk).fetch_one()
+        assert loaded is not None
+        loaded.note = "after"
+        await db.asave(loaded)
+
+        result = await db.aselect(AsyncGradeNote).filter(AsyncGradeNote.id == pk).fetch_one()
+        assert result is not None
+        assert result.note == "after"

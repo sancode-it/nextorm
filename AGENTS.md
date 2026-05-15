@@ -12,8 +12,12 @@ PonyORM-inspired query DSL. Minimum Python version: **3.12** (tested on 3.12–3
 
 1. **Before editing** — run `pdm test` and `pdm lint` to see the baseline state.
 2. **After editing** — run `pdm run fix`, `pdm format`, `pdm typecheck`, `pdm coverage`.
-3. **For API changes** — update or add docstrings; rebuild docs with `pdm docs-html`.
-4. **Quality gate** — all tests must pass with **100% branch coverage** before work
+3. **For API changes** — update or add docstrings; update the relevant narrative
+   docs under `docs/` (e.g. `docs/collection.rst`, `docs/entities.rst`); rebuild
+   docs with `pdm docs-html`.
+4. **For any feature/API change** — add an entry to `CHANGELOG.rst` under the
+   current unreleased version heading.
+5. **Quality gate** — all tests must pass with **100% branch coverage** before work
    is considered complete.
 
 ---
@@ -60,7 +64,8 @@ nextorm/              Source package
   migrations/         File-based migration runner + CLI
   providers/          Provider abstraction (SyncProvider, AsyncProvider, …)
   pool.py             ConnectionPool / AsyncConnectionPool
-  debug.py            set_sql_debug, sql_debugging, QueryStat, global_stats
+  debug.py            set_sql_debug, sql_debugging, capture_sql, async_capture_sql,
+                      CapturedQuery, QueryStat, global_stats, clear_global_stats
   exceptions.py       All public exception classes
 
 tests/                One file per feature area
@@ -110,6 +115,24 @@ methods are coroutines (`await qs.fetch_all()`).  Everything else (`.filter`,
 `Entity.aselect()` and `Entity.aget()` are convenience shortcuts that locate
 the `AsyncDatabase` automatically via `_find_db_for_entity`.
 
+### Unified Query API
+
+All entry-point methods share the same calling convention:
+`method(predicate=None, *conditions: SqlNode, **kwargs)` — all arguments optional.
+
+| Method | Returns |
+|---|---|
+| `Entity.select(predicate?, *conditions, **kwargs)` | `QuerySet[Self]` |
+| `Entity.aselect(predicate?, *conditions, **kwargs)` | `AsyncQuerySet[Self]` |
+| `Entity.get(predicate?, *conditions, **kwargs)` | `Self \| None` |
+| `Entity.aget(predicate?, *conditions, **kwargs)` | `Self \| None` |
+| `Entity.exists(predicate?, *conditions, **kwargs)` | `bool` |
+| `RelatedCollection.select(predicate?, *conditions, **kwargs)` | `QuerySet[T]` |
+| `RelatedCollection.where(predicate)` | `QuerySet[T]` |
+| `RelatedCollection.filter(*conditions, **kwargs)` | `QuerySet[T]` |
+| `QuerySet.where(predicate)` | `QuerySet[ET]` |
+| `QuerySet.filter(*conditions, **kwargs)` | `QuerySet[ET]` |
+
 ### Prefetch / N+1
 
 `QuerySet.prefetch(*relations)` issues one extra `WHERE pk IN (...)` batch
@@ -155,6 +178,71 @@ class Order(Entity):
     created = Req[datetime](precision=6)
     notes = Opt[str](256)
     is_draft = Local[bool](default=True)
+```
+
+### Debugging & SQL Capture
+
+#### Sync SQL capture (`capture_sql`)
+
+Use `capture_sql` to assert on executed SQL in tests — no mocking required:
+
+```python
+from nextorm import capture_sql
+
+with capture_sql() as queries:
+    db.select(User).filter(User.active == True).fetch_all()
+
+assert len(queries) == 1
+assert "WHERE" in queries[0].sql
+assert queries[0].params == [True]
+```
+
+Key properties of `capture_sql`:
+- Returns a `list[CapturedQuery]`; each entry has `.sql` (str) and `.params` (list).
+- **Sync only** — captures only queries issued by `Database` and `QuerySet`.
+- Nesting is supported; only the **innermost** block captures queries.
+- The list remains accessible after the `with` block exits.
+- `str(captured_query)` formats as `"SQL  -- params: [...]"` for quick printing.
+
+#### Async SQL capture (`async_capture_sql`)
+
+For async code using `AsyncDatabase` and `AsyncQuerySet`, use `async_capture_sql`:
+
+```python
+from nextorm import async_capture_sql
+
+async with async_capture_sql() as queries:
+    await db.aselect(User).fetch_all()
+    await db.aselect(Post).filter(Post.draft == False).fetch_all()
+
+assert len(queries) == 2
+assert "WHERE" in queries[1].sql
+assert queries[1].params == [False]
+```
+
+Key properties of `async_capture_sql`:
+- Uses `contextvars.ContextVar` so it works correctly across `await` boundaries.
+- **Async only** — captures only queries from `AsyncDatabase` and `AsyncQuerySet`.
+- Nesting is supported; only the **innermost** block captures queries.
+- Each context captures independently into its own list.
+- Works seamlessly with pytest's `@pytest.mark.asyncio` decorator.
+
+#### Debug output
+
+For human-readable debug output during development:
+
+```python
+from nextorm import sql_debugging
+
+with sql_debugging():
+    # All SQL + params printed to stdout (sync)
+    db.select(Order).fetch_all()
+
+# For async, use set_sql_debug(True) or sql_debugging() then check stdout:
+from nextorm import set_sql_debug
+
+set_sql_debug(True)
+# async code will now also print SQL debug output
 ```
 
 ### Session and db_session
@@ -219,3 +307,12 @@ Any failure in any gate means the work is not complete.
   `Set(...)`, `Local(...)`.
 - **v0.2 `db_session` for both** — `db_session` works for sync and async;
   there is no `async_db_session`.  Use the same context manager for both.
+- **Table management is destructive** — `drop_table`, `drop_all_tables`, and
+  `Entity.drop_table()` are irreversible.  The default `with_all_data=False`
+  guard raises `RuntimeError` when rows exist; always pass `with_all_data=True`
+  intentionally.  `RelatedCollection.drop_table()` is only valid on M2M
+  relations — calling it on O2M raises `RuntimeError`.
+- **`disconnect()` vs `close()`** — `Database.disconnect()` drains the
+  connection pool (useful before deleting a SQLite file); `Database.close()` is
+  the full teardown (pool + metadata).  Call `disconnect()` when you only want
+  to release open handles and keep the `Database` object reusable.
