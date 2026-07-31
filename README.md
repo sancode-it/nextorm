@@ -145,6 +145,7 @@ pdm docs-html     # build Sphinx docs
 ## Acknowledgements
 
 NextORM's API design and query DSL are heavily inspired by
-[PonyORM](https://ponyorm.org), created by Alexander Kozlovsky, Alexey Malashkevich,
+[PonyORM](https://ponyorm.org), created by Alexander Kozlovsky, Alexey Malashkevich
 and Alexander Tischenko, released under the Apache License 2.0.
+
 NextORM is a new, independent implementation and shares no source code with PonyORM.
