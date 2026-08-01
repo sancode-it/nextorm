@@ -47,7 +47,7 @@ class Tag(Entity):
 
 
 class Product(Entity):
-    name: Req[str](64)  # positional shorthand: max_len=64
+    name: Req[str] = Req(64)  # positional shorthand: max_len=64
     price: Req[float]
     sku: Req[str] = Req(column="product_sku", unique=True)  # marker-call options
     tags: Set[Tag]  # many-to-many

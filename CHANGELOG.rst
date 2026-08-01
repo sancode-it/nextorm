@@ -1,6 +1,51 @@
 Changelog
 =========
 
+0.4.0 — 2026-06-05
+------------------
+
+This is the first beta release of NextORM. The API is now considered stable,
+but some features are still in development and may change in future releases.
+Please report any issues on GitHub.
+
+**Bug fixes:**
+
+- ``SingleDescriptor.__set__`` now marks the entity dirty in the active session
+  when a FK relation is reassigned on a persisted entity.  Previously, assigning
+  a ``Single[X]`` field via ``entity.rel = other`` or ``entity.set(rel=other)``
+  updated the in-memory state but never generated an ``UPDATE`` statement, so
+  the change was silently lost at commit time.
+
+- Generator-expression queries that reference a simple attribute on the root
+  entity (e.g. ``lambda j: j.notes``) now qualify the column with its table
+  name in generated SQL (``job.notes``).  Previously the column was unqualified,
+  which caused ``sqlite3.OperationalError: ambiguous column name`` when the
+  query joined another table that had a column of the same name.
+
+- ``RelatedCollection.add()`` now accepts an iterable (e.g. a list) of items
+  in addition to individual positional arguments, matching the existing
+  behaviour of ``RelatedCollection.remove()``:
+
+  .. code-block:: python
+
+     # Add items one by one (unchanged)
+     stage.services.add(s1, s2)
+
+     # Add a pre-collected list (new)
+     services_to_add = [Service.get(id=sid) for sid in ids]
+     stage.services.add(services_to_add)
+
+  Works for both one-to-many and many-to-many relations.
+
+- ``RelatedCollection.add()`` now raises ``RuntimeError`` with a clear message
+  when the owner entity has not yet been saved (PK is ``None``), instead of
+  propagating a confusing ``AssertionError``.
+
+- ``RelatedCollection.count()`` and iteration (``__iter__`` / ``list()``) on an
+  unsaved owner entity (PK is ``None``) now return ``0`` / ``[]`` respectively,
+  instead of raising ``AssertionError: Owner entity has no primary key``.  This
+  matches the intuitive expectation that a brand-new entity has no related rows.
+
 0.3.0 — 2026-05-03
 ------------------
 
