@@ -526,6 +526,17 @@ class SingleDescriptor:
                         vals.append(value.__dict__.get(f"_{fname}_id"))
                 pk = tuple(vals)
             obj.__dict__[self._fk_key] = pk
+        # Auto dirty-tracking: mark the FK column dirty in the active session
+        # when the entity has already been persisted (_dbvals_ is set by
+        # _do_insert / _map_row).  Without this, assigning a FK via
+        # ``entity.rel = other`` would update the in-memory state but never
+        # generate an UPDATE statement.
+        if obj.__dict__.get("_dbvals_") is not None:
+            from nextorm.session import _get_session_stack  # noqa: PLC0415
+
+            cache = _get_session_stack().current
+            if cache is not None:
+                cache.mark_dirty(obj)
 
     def __delete__(self, obj: Any) -> None:
         obj.__dict__.pop(self._fk_key, None)
