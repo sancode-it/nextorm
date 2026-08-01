@@ -188,10 +188,12 @@ def _decompile_condition(
                 _fields = getattr(entity_cls, "_fields_", {})
                 _relations = getattr(entity_cls, "_relations_", {})
                 if attr_name in _fields:
-                    return ColumnRef(_fields[attr_name].spec.column or attr_name)
+                    col = _fields[attr_name].spec.column or attr_name
+                    return ColumnRef(col, entity_cls._table_name_)
                 if attr_name in _relations:
                     _ri = _relations[attr_name]
-                    return ColumnRef(_ri.spec.column or f"{attr_name}_id")
+                    col = _ri.spec.column or f"{attr_name}_id"
+                    return ColumnRef(col, entity_cls._table_name_)
             return ColumnRef(attr_name)
         if item.kind == "rel_chain":
             # N-level attribute access: p.rel1.rel2....field
