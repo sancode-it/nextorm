@@ -76,9 +76,7 @@ class RelatedCollection[ET: Entity]:
     def _owner_pk(self) -> Any:
         from nextorm.database import _get_pk_val  # noqa: PLC0415
 
-        pk = _get_pk_val(self._owner)
-        assert pk is not None, "Owner entity has no primary key"
-        return pk
+        return _get_pk_val(self._owner)
 
     def _resolve_target(self) -> type[Entity]:
         """Return the concrete target entity class."""
@@ -215,6 +213,8 @@ class RelatedCollection[ET: Entity]:
     def _ensure_loaded(self) -> list[ET]:
         """Load all items into the cache and return it."""
         if self._cache is None:
+            if self._owner_pk() is None:
+                return []
             self._cache = self._build_queryset().fetch_all()
         return self._cache
 
@@ -312,6 +312,8 @@ class RelatedCollection[ET: Entity]:
 
     def count(self) -> int:
         """Return the number of items without loading them."""
+        if self._owner_pk() is None:
+            return 0
         return self._build_queryset().count()
 
     def is_empty(self) -> bool:
@@ -426,14 +428,32 @@ class RelatedCollection[ET: Entity]:
     # Mutation methods
     # ------------------------------------------------------------------
 
-    def add(self, *items: ET) -> None:
+    def add(self, *items: ET | Iterable[ET]) -> None:
         """Add one or more items to this collection.
+
+        Accepts either individual items or an iterable of items::
+
+            collection.add(item1, item2)  # Individual items
+            collection.add([item1, item2])  # List or other iterable of items
 
         For M2M: inserts rows into the join table.
         For O2M: updates the FK column on each item.
         """
+        # Flatten items: accept both individual args and iterables
+        flat_items: list[ET] = []
+        for item in items:
+            if isinstance(item, (list, tuple)):
+                flat_items.extend(cast("Iterable[ET]", item))
+            else:
+                flat_items.append(cast("ET", item))
+
         db = self._require_db()
         owner_pk = self._owner_pk()
+        if owner_pk is None:
+            raise RuntimeError(
+                f"Cannot add to '{self._ri.name}': owner entity has no primary key. "
+                "Save or flush the owner first."
+            )
         owner_cls = type(self._owner)
 
         if self._is_m2m():
@@ -448,7 +468,7 @@ class RelatedCollection[ET: Entity]:
             owner_col = f"{owner_table}_id"
             target_col = f"{target_table}_id"
             assert db._builder is not None
-            for item in items:
+            for item in flat_items:
                 item_pk = _gpv(item)
                 stmt = Insert(
                     table=join_table,
@@ -472,7 +492,7 @@ class RelatedCollection[ET: Entity]:
             )
             if back_ref is None:
                 raise RuntimeError(f"Cannot add to {self._ri.name}: no Single back-reference found.")
-            for item in items:
+            for item in flat_items:
                 setattr(item, back_ref.name, self._owner)
                 db.save(item)
 

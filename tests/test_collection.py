@@ -1129,3 +1129,44 @@ def test_o2m_build_queryset_composite_pk_len_mismatch_falls_through(o2m_db: Data
     # Just build the queryset (don't execute) to exercise the fallthrough branch
     qs = col._build_queryset()
     assert isinstance(qs, QuerySet)
+
+
+# ---------------------------------------------------------------------------
+# Unsaved owner (PK is None) — count / _ensure_loaded return empty; add raises
+# ---------------------------------------------------------------------------
+
+
+def test_count_returns_zero_for_unsaved_owner(o2m_db: Database) -> None:
+    """count() returns 0 when the owner entity has no PK (not yet saved)."""
+    with db_session:
+        post = ColPost.__new__(ColPost)  # bypass __init__ — no PK
+    col: RelatedCollection[Any] = RelatedCollection(post, ColPost._relations_["comments"], o2m_db)
+    assert col.count() == 0
+
+
+def test_ensure_loaded_returns_empty_for_unsaved_owner(o2m_db: Database) -> None:
+    """_ensure_loaded() returns [] when the owner entity has no PK (not yet saved)."""
+    with db_session:
+        post = ColPost.__new__(ColPost)  # bypass __init__ — no PK
+    col: RelatedCollection[Any] = RelatedCollection(post, ColPost._relations_["comments"], o2m_db)
+    assert col._ensure_loaded() == []
+
+
+def test_m2m_add_with_list_of_items(m2m_db: Database) -> None:
+    """add() accepts a list of items (flattens the iterable, same as remove())."""
+    with db_session:
+        art = ColArticle(title="AddList")
+        t1 = ColTag(label="lx1")
+        t2 = ColTag(label="lx2")
+    art.tags.add([t1, t2])
+    assert art.tags.count() == 2
+
+
+def test_add_raises_for_unsaved_owner(m2m_db: Database) -> None:
+    """add() raises RuntimeError when the owner entity has no PK (not yet saved)."""
+    with db_session:
+        tag = ColTag(label="orphan-tag")
+    art = ColArticle.__new__(ColArticle)  # bypass __init__ — no PK
+    col: RelatedCollection[Any] = RelatedCollection(art, ColArticle._relations_["tags"], m2m_db)
+    with pytest.raises(RuntimeError, match="owner entity has no primary key"):
+        col.add(tag)
