@@ -16,6 +16,10 @@
 .. image:: https://img.shields.io/badge/license-Apache%202.0-blue
    :alt: License
 
+.. image:: https://img.shields.io/discord/1533520198777180191?label=Discord&logo=discord&color=5865F2
+   :alt: Discord
+   :target: https://discord.gg/PevUtddqCM
+
 ----
 
 **NextORM** is a modern, async-capable Python ORM — a fully-typed successor to PonyORM.
@@ -66,6 +70,32 @@ It brings the expressive PonyORM query style into the era of Python 3.12+ type a
        p.tags.add(Tag(name="new"))
 
    products = db.select(Product).filter(Product.price < 20).fetch_all()
+
+.. grid:: 2
+   :gutter: 2
+   :margin: 4 0 0 0
+
+   .. grid-item-card:: :octicon:`comment-discussion` Community
+      :text-align: center
+
+      Get help, share ideas, and follow releases.
+
+      .. button-link:: https://discord.gg/PevUtddqCM
+         :color: primary
+         :outline:
+
+         Join Discord
+
+   .. grid-item-card:: :octicon:`mark-github` Contribute
+      :text-align: center
+
+      Browse source, report issues, and send PRs.
+
+      .. button-link:: https://github.com/sancode-it/nextorm
+         :color: secondary
+         :outline:
+
+         View on GitHub
 
 ----
 

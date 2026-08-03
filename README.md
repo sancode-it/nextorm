@@ -12,6 +12,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/nextorm)](https://pypi.org/project/nextorm/)
 [![License](https://img.shields.io/pypi/l/nextorm)](LICENSE)
 [![Docs](https://readthedocs.org/projects/nextorm/badge/?version=latest)](https://nextorm.readthedocs.io/en/latest/)
+[![Discord](https://img.shields.io/discord/<SERVER_ID>?label=Discord&logo=discord)](https://discord.gg/PevUtddqCM)
 
 Modern Python ORM with async support, full type annotations and a generator-expression query DSL.
 
@@ -129,6 +130,17 @@ See the [migration guide](https://nextorm.readthedocs.io/en/latest/ponyorm.html)
 ## Documentation
 
 Full docs at **[nextorm.readthedocs.io](https://nextorm.readthedocs.io/en/latest/)**.
+
+## Community
+
+Questions, ideas, and feedback are welcome in the NextORM Discord community.
+
+- 💬 Get help with models, queries, relations, and async usage
+- 🧪 Share bug reports with minimal reproductions
+- 🧭 Discuss roadmap ideas and RFCs
+- 📝 Suggest docs improvements
+
+Join here: **https://discord.gg/PevUtddqCM**
 
 ## Development
 
