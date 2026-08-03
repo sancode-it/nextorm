@@ -1,6 +1,13 @@
 Changelog
 =========
 
+0.4.1 — 2026-08-03
+------------------
+
+**Docs:**
+
+- Add NextORM Discord community integration.
+
 0.4.0 — 2026-08-01
 ------------------
 
