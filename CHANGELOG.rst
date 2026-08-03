@@ -1,7 +1,7 @@
 Changelog
 =========
 
-0.4.0 — 2026-06-05
+0.4.0 — 2026-08-01
 ------------------
 
 This is the first beta release of NextORM. The API is now considered stable,
