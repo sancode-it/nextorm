@@ -291,7 +291,7 @@ Examples:
        # Composite primary key on two foreign keys
        _pk_ = PrimaryKey("customer", "date")
        # Unique constraint
-       _ck_customer_date = composite_key("customer_id", "date")
+       _unq_customer_date = composite_key("customer_id", "date")
        # Index for range queries
        _idx_date_status = composite_index("date", "status")
 
