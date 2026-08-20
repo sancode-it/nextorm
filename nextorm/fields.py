@@ -426,6 +426,7 @@ class PK[T: PkValue](Marker[T]):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self._options = kwargs
+        self._args = args  # positional args resolved later by EntityMeta using inner_type
 
     @overload
     def __get__(self, obj: None, owner: type) -> ColumnExpr: ...

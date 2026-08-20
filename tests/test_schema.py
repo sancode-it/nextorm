@@ -314,6 +314,34 @@ def test_single_relation_columns() -> None:
     assert col2 is not None
 
 
+# --- Test entities for FK column type derivation (regression: previously
+# hardcoded py_type=int for every FK column regardless of the target's real
+# PK type, e.g. a str-typed sku PK) ---
+class XStrPk(Entity):
+    sku: PK[str] = PK(20)
+
+
+class YStrFk(Entity):
+    x: Single[XStrPk] = Single()
+
+
+def test_single_relation_fk_column_matches_target_pk_type() -> None:
+    """FK column type/length must match a non-int (e.g. str) target PK.
+
+    Regression test: entity_to_table() used to hardcode py_type=int for every
+    generated FK column, which produced a type mismatch (integer vs varchar)
+    the moment a Postgres backend tried to add the FK constraint against a
+    str-typed primary key such as ``PK[str]``.
+    """
+    table = entity_to_table(YStrFk)
+    fk_col = next(c for c in table.columns if c.name == "x_id")
+    fk = next(f for f in table.foreign_keys if f.column == "x_id")
+    assert fk_col.py_type is str
+    assert fk_col.max_len == 20
+    assert fk.ref_table == "xstrpk"
+    assert fk.ref_column == "sku"
+
+
 def test_set_relation_reverse_column_and_reverse_columns() -> None:
     X3._relations_["ys"] = RelationInfo(
         "ys", _RS(kind=_RK.SET, target=Y3, reverse_columns=["x_ref_id"])

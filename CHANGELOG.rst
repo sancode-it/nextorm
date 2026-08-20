@@ -1,6 +1,34 @@
 Changelog
 =========
 
+0.4.2 — 2026-08-20
+------------------
+
+**Bug fixes:**
+
+- Foreign key columns generated for ``Single[...]`` relations now match the
+  actual type of the referenced primary key, instead of always assuming
+  ``int``.  Previously, an entity with a non-integer PK (e.g.
+  ``sku: PK[str]``) would generate a mismatched ``integer`` FK column on the
+  referencing table, which PostgreSQL rejected outright when creating the
+  constraint::
+
+      psycopg.errors.DatatypeMismatch: foreign key constraint "..." cannot
+      be implemented
+      DETAIL:  Key columns "..." and "sku" ... are of incompatible types:
+      integer and character varying.
+
+  ``entity_to_table()`` now resolves the FK column's ``py_type``,
+  ``max_len``, ``precision``, and ``scale`` from the target entity's actual
+  PK field, across all three FK-derivation paths (simple, composite, and
+  explicit ``columns=``).
+
+- ``PK(...)`` positional arguments (e.g. ``PK(20)`` for ``max_len``) were
+  silently dropped, unlike the equivalent shorthand already supported on
+  ``Req``/``Opt`` markers.  ``PK.__init__`` now stores ``self._args`` so
+  ``EntityMeta`` resolves the shorthand the same way it does for other field
+  markers.
+
 0.4.1 — 2026-08-03
 ------------------
 

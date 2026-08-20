@@ -55,6 +55,36 @@ def _target_matches(
     return False
 
 
+def _resolve_pk_ref(
+    resolved_target: type[Any] | None,
+    fname: str,
+) -> tuple[str, type[Any], int | None, int | None, int | None]:
+    """Resolve the referenced column name + type info for PK field *fname* on
+    *resolved_target*.
+
+    Returns ``(ref_column_name, py_type, max_len, precision, scale)``. FK
+    columns must match the *actual* type of the column they reference (e.g. a
+    ``PK[str]`` target needs a ``str``-typed FK column, not ``int``) or the
+    database will reject the constraint outright.
+    """
+    t_fields = getattr(resolved_target, "_fields_", {})
+    t_relations = getattr(resolved_target, "_relations_", {})
+    if fname in t_fields:
+        fi = t_fields[fname]
+        return (
+            fi.spec.column or fname,
+            fi.py_type,
+            fi.spec.max_len,
+            fi.spec.precision,
+            fi.spec.scale,
+        )
+    if fname in t_relations:
+        # PK is itself a relation (e.g. joined-table PK) — its column is an
+        # FK column, which is always an integer surrogate today.
+        return (t_relations[fname].spec.column or f"{fname}_id", int, None, None, None)
+    return (fname, int, None, None, None)  # pragma: no cover — PK field must be a field or relation
+
+
 def entity_to_table(
     entity_cls: type[Entity],
     *,
@@ -134,38 +164,30 @@ def entity_to_table(
         # Support columns (composite FK) or column (single FK)
         if ri.spec.columns:
             col_names = ri.spec.columns
-            # user-specified columns; assume simple refs
-            ref_cols: list[str] = ["id"] * len(col_names)
+            # Only derive real target ref info when the explicit column count
+            # actually corresponds 1:1 to the target's PK fields — otherwise
+            # (e.g. a mismatched arity override) fall back to the historical
+            # "id"/int placeholder, same as before this function resolved types.
+            if (
+                resolved_target is not None
+                and target_pk_fields
+                and len(col_names) == len(target_pk_fields)
+            ):
+                refs = [_resolve_pk_ref(resolved_target, fname) for fname in target_pk_fields]
+            else:
+                refs = [("id", int, None, None, None)] * len(col_names)
         elif is_composite_target and resolved_target is not None:
             # Auto-derive multi-column FK for composite-PK target
             col_names = _derive_composite_fk_cols(ri.name, resolved_target)
-            # Derive corresponding reference column names in the target table
-            ref_cols = []
-            for fname in target_pk_fields:
-                t_fields = getattr(resolved_target, "_fields_", {})
-                t_relations = getattr(resolved_target, "_relations_", {})
-                if fname in t_fields:
-                    ref_cols.append(t_fields[fname].spec.column or fname)
-                elif fname in t_relations:
-                    ref_cols.append(t_relations[fname].spec.column or f"{fname}_id")
-                else:  # pragma: no cover — PK field must be a field or relation
-                    ref_cols.append(f"{fname}_id")
+            refs = [_resolve_pk_ref(resolved_target, fname) for fname in target_pk_fields]
         else:
             col_names = [ri.spec.column or f"{ri.name}_id"]
-            # Determine the actual PK column on the target table (may not be "id").
+            # Determine the actual PK column (name + type) on the target table
+            # (may not be "id" / int — e.g. a str-typed sku PK).
             if resolved_target is not None and target_pk_fields:
-                pk_fname = target_pk_fields[0]
-                t_fields = getattr(resolved_target, "_fields_", {})
-                t_relations = getattr(resolved_target, "_relations_", {})
-                if pk_fname in t_fields:
-                    _ref_col: str = t_fields[pk_fname].spec.column or pk_fname
-                elif pk_fname in t_relations:
-                    _ref_col = t_relations[pk_fname].spec.column or f"{pk_fname}_id"
-                else:  # pragma: no cover — PK field must be a field or relation
-                    _ref_col = pk_fname
-                ref_cols = [_ref_col]
+                refs = [_resolve_pk_ref(resolved_target, target_pk_fields[0])]
             else:
-                ref_cols = ["id"]
+                refs = [("id", int, None, None, None)]
         ref_table = _target_table_name(ri.spec.target)
         nullable: bool = ri.spec.nullable
         # Derive ON DELETE action: explicit override > nullability default
@@ -179,13 +201,18 @@ def entity_to_table(
         unique = is_one_to_one is not None and (table_name, ri.name) in is_one_to_one
         # If this relation is part of the composite PK, mark the FK column as primary_key
         is_pk_part = ri.name in pk_rel_names
-        for col_name, ref_col in zip(col_names, ref_cols, strict=True):
+        for col_name, (ref_col, ref_type, ref_max_len, ref_precision, ref_scale) in zip(
+            col_names, refs, strict=True
+        ):
             fk_col = Column(
                 name=col_name,
-                py_type=int,
+                py_type=ref_type,
                 nullable=nullable,
                 unique=unique,
                 primary_key=is_pk_part,
+                max_len=ref_max_len,
+                precision=ref_precision,
+                scale=ref_scale,
             )
             table.columns.append(fk_col)
             fk_name = ri.spec.fk_name or f"fk_{table_name}__{col_name}"
