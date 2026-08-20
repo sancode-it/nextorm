@@ -52,7 +52,7 @@ from nextorm.sql.nodes import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from nextorm.database import Database
     from nextorm.entity import RelationInfo
@@ -691,6 +691,10 @@ class QuerySet[ET: Entity]:
         if self._prefetches:
             self._do_prefetch(results)
         return results
+
+    def __iter__(self) -> Iterator[ET]:
+        """Execute the query (a single ``SELECT``) and iterate over the results."""
+        return iter(self.fetch_all())
 
     def fetch_one(self) -> ET | None:
         """Execute with ``LIMIT 1`` and return the first entity, or ``None``."""

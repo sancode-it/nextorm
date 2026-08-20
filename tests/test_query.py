@@ -544,6 +544,51 @@ def test_fetch_all_empty_table(db: Database) -> None:
 
 
 # ---------------------------------------------------------------------------
+# QuerySet.__iter__
+# ---------------------------------------------------------------------------
+
+
+def test_iter_yields_entity_instances(seeded_db: Database) -> None:
+    results = list(seeded_db.select(Product))
+    assert len(results) == 3
+    for r in results:
+        assert isinstance(r, Product)
+
+
+def test_iter_matches_fetch_all(seeded_db: Database) -> None:
+    qs = seeded_db.select(Product)
+    assert [p.id for p in qs] == [p.id for p in qs.fetch_all()]
+
+
+def test_iter_empty_table(db: Database) -> None:
+    assert list(db.select(Product)) == []
+
+
+def test_iter_executes_single_query(seeded_db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test: QuerySet used to have no __iter__, so `for x in qs`
+    fell back to the legacy __getitem__ protocol — issuing one
+    OFFSET/LIMIT query *per row* instead of a single SELECT.
+
+    Uses a plain `for` loop rather than `list(qs)`: list() additionally
+    calls length_hint()/__len__() as a preallocation optimization, which
+    issues its own (unrelated, pre-existing, and legitimate) COUNT query.
+    """
+    qs = seeded_db.select(Product)
+    call_count = 0
+    orig_execute = seeded_db._execute
+
+    def counting_execute(sql: str, params: list[Any]) -> list[tuple[Any, ...]]:
+        nonlocal call_count
+        call_count += 1
+        return orig_execute(sql, params)
+
+    monkeypatch.setattr(seeded_db, "_execute", counting_execute)
+    for _ in qs:
+        pass
+    assert call_count == 1
+
+
+# ---------------------------------------------------------------------------
 # QuerySet.filter
 # ---------------------------------------------------------------------------
 

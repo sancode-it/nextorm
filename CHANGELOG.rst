@@ -1,6 +1,27 @@
 Changelog
 =========
 
+0.4.3 — 2026-08-20
+------------------
+
+**Bug fixes:**
+
+- ``QuerySet`` now implements ``__iter__`` (delegating to ``fetch_all()``),
+  instead of relying on the legacy ``__getitem__``-based iteration
+  fallback.  Previously, ``for x in queryset`` — including inside
+  generator expressions passed to ``sum()``/``avg()``/etc., and in list
+  comprehensions — was rejected by mypy with::
+
+      error: "QuerySet[...]" has no attribute "__iter__" (not iterable)  [attr-defined]
+
+  and could also cascade into a confusing ``sum()`` overload-resolution
+  error further downstream (``Generator has incompatible item type
+  "int"; expected "bool"``).  At runtime it was worse: without
+  ``__iter__``, Python silently fell back to calling ``__getitem__(0)``,
+  ``__getitem__(1)``, ... until ``IndexError``, and each call issued its
+  own ``OFFSET ... LIMIT 1`` query — turning a single ``SELECT`` into
+  O(N) round trips (11 queries for 5 rows in one reproduction).
+
 0.4.2 — 2026-08-20
 ------------------
 
