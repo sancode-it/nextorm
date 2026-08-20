@@ -1127,7 +1127,8 @@ class EntityMeta(type):
             # _FIELD_ALIAS_SPECS and _RELATION_ALIAS_KINDS.  Plain annotations (int, str,
             # etc.) produce no __origin__ match and are silently ignored.
             origin = cast(
-                "type[Marker[OptAttrValue | Entity]]", getattr(annotation, "__origin__", None)
+                "type[Marker[OptAttrValue | Entity]]",
+                getattr(annotation, "__origin__", None),
             )
             args: tuple[Any, ...] = getattr(annotation, "__args__", ())
             inner_type = None

@@ -251,7 +251,13 @@ class RelatedCollection[ET: Entity]:
             owner_pk = self._owner_pk()
             db = self._require_db()
 
-            from nextorm.sql.nodes import BinOp, ColumnRef, Param, Select, Star  # noqa: PLC0415
+            from nextorm.sql.nodes import (  # noqa: PLC0415
+                BinOp,
+                ColumnRef,
+                Param,
+                Select,
+                Star,
+            )
 
             stmt = Select(
                 columns=(Star(),),
@@ -528,7 +534,12 @@ class RelatedCollection[ET: Entity]:
             target_table = target_cls._table_name_
 
             from nextorm.database import _get_pk_val as _gpv  # noqa: PLC0415
-            from nextorm.sql.nodes import BinOp, ColumnRef, Delete, Param  # noqa: PLC0415
+            from nextorm.sql.nodes import (  # noqa: PLC0415
+                BinOp,
+                ColumnRef,
+                Delete,
+                Param,
+            )
 
             owner_col = f"{owner_table}_id"
             target_col = f"{target_table}_id"
@@ -584,7 +595,12 @@ class RelatedCollection[ET: Entity]:
         if self._is_m2m():
             join_table = self._join_table_name()
             owner_table = owner_cls._table_name_
-            from nextorm.sql.nodes import BinOp, ColumnRef, Delete, Param  # noqa: PLC0415
+            from nextorm.sql.nodes import (  # noqa: PLC0415
+                BinOp,
+                ColumnRef,
+                Delete,
+                Param,
+            )
 
             owner_col = f"{owner_table}_id"
             assert db._builder is not None
@@ -615,7 +631,13 @@ class RelatedCollection[ET: Entity]:
                     "back-reference found. Declare Single[...| None] on the target."
                 )
             fk_col = f"{back_ref.name}_id"
-            from nextorm.sql.nodes import BinOp, ColumnRef, Literal, Param, Update  # noqa: PLC0415
+            from nextorm.sql.nodes import (  # noqa: PLC0415
+                BinOp,
+                ColumnRef,
+                Literal,
+                Param,
+                Update,
+            )
 
             assert db._builder is not None
             stmt_u = Update(

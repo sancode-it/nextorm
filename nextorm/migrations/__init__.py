@@ -24,4 +24,10 @@ from nextorm.migrations.core import (
     showmigrations,
 )
 
-__all__ = ["MigrationRunner", "MigrationStatus", "makemigrations", "migrate", "showmigrations"]
+__all__ = [
+    "MigrationRunner",
+    "MigrationStatus",
+    "makemigrations",
+    "migrate",
+    "showmigrations",
+]

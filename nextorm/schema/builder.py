@@ -18,7 +18,9 @@ from nextorm.schema.core import Column, ForeignKey, Index, Table
 __all__ = ["build_schema", "entity_to_table"]
 
 
-def _target_table_name(target: type[Any] | str | typing.ForwardRef | _LazyType | None) -> str:
+def _target_table_name(
+    target: type[Any] | str | typing.ForwardRef | _LazyType | None,
+) -> str:
     """Return the SQL table name for a relation target.
 
     Prefers the entity's ``_table_name_`` attribute when *target* is a concrete
@@ -38,7 +40,8 @@ def _target_table_name(target: type[Any] | str | typing.ForwardRef | _LazyType |
 
 
 def _target_matches(
-    target: type[Any] | str | typing.ForwardRef | _LazyType | None, entity_cls: type[Any]
+    target: type[Any] | str | typing.ForwardRef | _LazyType | None,
+    entity_cls: type[Any],
 ) -> bool:
     """Return True if *target* refers to *entity_cls* (handles forward-ref strings/ForwardRef)."""
     if target is None:  # pragma: no cover

@@ -214,7 +214,12 @@ def field_class_getitem[FT: Field[OptAttrValue], T](
         opts_groups = [LongStrTypeOpts]
         if prefix != "Opt":
             exclude_opts = ("nullable",)
-    elif item in (time, timedelta, datetime, DateTimeTz):  # date excluded: precision is not needed
+    elif item in (
+        time,
+        timedelta,
+        datetime,
+        DateTimeTz,
+    ):  # date excluded: precision is not needed
         opts_groups = [DateTimeTypeOpts]
         allowed_positional = ("precision",)
     elif item is Vec:
@@ -325,7 +330,8 @@ def relation_class_getitem[RT: Relation[Entity | None], T](
     name = f"{prefix}[{getattr(item, '__name__', repr(item))}]"
     bases = cast("tuple[type[Marker[Entity | None]], ...]", (cls,))
     marker_origin = cast(
-        "type[Marker[Entity | None]]", PK if issubclass(cls, Single) and prefix == "PK" else cls
+        "type[Marker[Entity | None]]",
+        PK if issubclass(cls, Single) and prefix == "PK" else cls,
     )
     namespace: dict[str, Any] = {
         "__origin__": marker_origin,

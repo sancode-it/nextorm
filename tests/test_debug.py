@@ -63,7 +63,9 @@ def test_set_sql_debug_enables_output(capsys: pytest.CaptureFixture[str]) -> Non
         set_sql_debug(False)
 
 
-def test_set_sql_debug_disable_suppresses_output(capsys: pytest.CaptureFixture[str]) -> None:
+def test_set_sql_debug_disable_suppresses_output(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     db = _make_db()
     set_sql_debug(False)
     db.select(Widget).fetch_all()
@@ -85,7 +87,9 @@ def test_sql_debugging_context_manager(capsys: pytest.CaptureFixture[str]) -> No
     assert capsys.readouterr().out == ""
 
 
-def test_sql_debugging_restores_previous_true_state(capsys: pytest.CaptureFixture[str]) -> None:
+def test_sql_debugging_restores_previous_true_state(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """sql_debugging restores the pre-context True state on exit."""
     set_sql_debug(True)
     try:

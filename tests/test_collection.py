@@ -680,7 +680,9 @@ def test_o2m_contains_no_backref_returns_false() -> None:
     assert result is False
 
 
-def test_o2m_contains_with_explicit_reverse_uses_back_ref_name(o2m_db: Database) -> None:
+def test_o2m_contains_with_explicit_reverse_uses_back_ref_name(
+    o2m_db: Database,
+) -> None:
     """__contains__ with reverse= set skips back-ref discovery (237->253 False branch)."""
     from nextorm.entity import RelationInfo  # noqa: PLC0415
     from nextorm.fields import RelationKind, RelationSpec  # noqa: PLC0415
@@ -846,9 +848,7 @@ def test_collection_select_with_predicate(o2m_db: Database) -> None:
         post = ColPost(title="Select Pred")
     post.comments.add(ColComment(text="yes"))
     post.comments.add(ColComment(text="no"))
-    results = post.comments.select(
-        lambda c: c.text == "yes"
-    ).fetch_all()
+    results = post.comments.select(lambda c: c.text == "yes").fetch_all()
     assert len(results) == 1
     assert results[0].text == "yes"
 
@@ -931,9 +931,7 @@ def test_collection_where_with_callable_predicate(o2m_db: Database) -> None:
         post = ColPost(title="Where Lambda")
     post.comments.add(ColComment(text="yes"))
     post.comments.add(ColComment(text="no"))
-    results = post.comments.where(
-        lambda c: c.text == "yes"
-    ).fetch_all()
+    results = post.comments.where(lambda c: c.text == "yes").fetch_all()
     assert len(results) == 1
     assert results[0].text == "yes"
 
@@ -1027,7 +1025,9 @@ def test_target_pk_col_returns_id_when_no_pk_fields(o2m_db: Database) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_is_m2m_reverse_name_set_but_back_ri_none_uses_fallback(o2m_db: Database) -> None:
+def test_is_m2m_reverse_name_set_but_back_ri_none_uses_fallback(
+    o2m_db: Database,
+) -> None:
     """_is_m2m() when reverse is set but relation not found on target → fallback (line 114→117)."""
     from nextorm.collection import RelatedCollection
     from nextorm.entity import RelationInfo
@@ -1110,7 +1110,9 @@ def test_o2m_build_queryset_composite_fk_owner_multi_col(o2m_db: Database) -> No
     assert len(results) == 1
 
 
-def test_o2m_build_queryset_composite_pk_len_mismatch_falls_through(o2m_db: Database) -> None:
+def test_o2m_build_queryset_composite_pk_len_mismatch_falls_through(
+    o2m_db: Database,
+) -> None:
     """When composite PK tuple length != FK col count, falls through to simple FK (line 200→212)."""
     from nextorm.collection import RelatedCollection
     from nextorm.entity import RelationInfo

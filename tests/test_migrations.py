@@ -440,7 +440,10 @@ def test_showmigrations_partial(tmp_path: Path) -> None:
     db2.bind("sqlite", ":memory:")
     db2.generate_mapping(create_tables=True)
     # Apply just first
-    from nextorm.migrations.core import _ensure_tracking_table, _record_version  # noqa: PLC0415
+    from nextorm.migrations.core import (  # noqa: PLC0415
+        _ensure_tracking_table,
+        _record_version,
+    )
 
     _ensure_tracking_table(db2)
     _record_version(db2, "0001_initial")
@@ -464,7 +467,11 @@ def test_showmigrations_sorted_order(tmp_path: Path) -> None:
     db.generate_mapping(create_tables=True)
     result = showmigrations(db, directory=tmp_path)
 
-    assert [s.name for s in result] == ["0001_first.py", "0002_second.py", "0003_third.py"]
+    assert [s.name for s in result] == [
+        "0001_first.py",
+        "0002_second.py",
+        "0003_third.py",
+    ]
     db.close()
 
 
@@ -651,7 +658,11 @@ def test_migrate_nonexistent_directory_returns_empty(tmp_path: Path) -> None:
 
 def test_migrate_applies_migration_and_records_version(tmp_path: Path) -> None:
     """migrate() runs upgrade() and records the version so it isn't re-applied."""
-    from nextorm.migrations import makemigrations, migrate, showmigrations  # noqa: PLC0415
+    from nextorm.migrations import (  # noqa: PLC0415
+        makemigrations,
+        migrate,
+        showmigrations,
+    )
 
     db = Database(entities=[BlogPost])
     db.bind("sqlite", ":memory:")

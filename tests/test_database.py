@@ -1386,7 +1386,9 @@ class DummyOwner(Entity):
     items: Set[DummyTarget]
 
 
-def test__validate_relations_resolve_type_branch(monkeypatch: pytest.MonkeyPatch) -> None:
+def test__validate_relations_resolve_type_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     db = Database()
     db._entities = [DummyOwner, DummyTarget]
 

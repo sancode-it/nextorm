@@ -151,7 +151,14 @@ def _decompile_condition(
     DecompileError
         If the bytecode pattern is not supported.
     """
-    from nextorm.sql.nodes import BinOp, ColumnRef, FuncCall, Literal, Param, UnaryOp  # noqa: PLC0415
+    from nextorm.sql.nodes import (  # noqa: PLC0415
+        BinOp,
+        ColumnRef,
+        FuncCall,
+        Literal,
+        Param,
+        UnaryOp,
+    )
 
     instructions = list(dis.get_instructions(code))
     stack: list[_StackItem] = []
@@ -205,7 +212,10 @@ def _decompile_condition(
                     f"Cannot resolve '{'.'.join(chain)}': entity class is required "
                     "for multi-level attribute access. Pass entity_cls to _decompile_condition."
                 )
-            from nextorm.entity import _matches_entity, _resolve_entity_target  # noqa: PLC0415
+            from nextorm.entity import (  # noqa: PLC0415
+                _matches_entity,
+                _resolve_entity_target,
+            )
 
             current_entity: Any = entity_cls
             current_table: str = entity_cls._table_name_
@@ -270,7 +280,9 @@ def _decompile_condition(
                     )
                 elif is_composite_target:
                     # Composite PK target — build multi-column JOIN condition.
-                    from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+                    from nextorm.entity import (
+                        _derive_composite_fk_cols,  # noqa: PLC0415
+                    )
 
                     if ri.spec.columns:
                         fk_col_names = list(ri.spec.columns)
@@ -565,7 +577,9 @@ def _decompile_condition(
                 if val is not None and isinstance(val, str):
                     val_lower = val.lower() if func_name == "LOWER" else val
                     like_node = BinOp(
-                        FuncCall(func_name, col_node), "LIKE", Param(value=f"%{val_lower}%")
+                        FuncCall(func_name, col_node),
+                        "LIKE",
+                        Param(value=f"%{val_lower}%"),
                     )
                     stack.append(_StackItem("node", like_node))
                     i += 1
@@ -612,7 +626,9 @@ def _decompile_condition(
                                 # Get the target entity's PK value from left
                                 val = left.value
                                 if isinstance(val, Entity):
-                                    from nextorm.database import _get_pk_val  # noqa: PLC0415
+                                    from nextorm.database import (
+                                        _get_pk_val,  # noqa: PLC0415
+                                    )
 
                                     val = _get_pk_val(val)
                                 exists_sql = (
@@ -620,7 +636,9 @@ def _decompile_condition(
                                     f"{join_table}.{jt_owner_col} = {owner_table}.{owner_pk_col} AND "
                                     f"{join_table}.{jt_target_col} = ?"
                                 )
-                                from nextorm.sql.nodes import ExistsNode  # noqa: PLC0415
+                                from nextorm.sql.nodes import (
+                                    ExistsNode,  # noqa: PLC0415
+                                )
 
                                 exists_node = ExistsNode(sql=exists_sql, params=(val,))
                                 stack.append(_StackItem("node", exists_node))

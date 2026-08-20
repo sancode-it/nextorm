@@ -173,7 +173,9 @@ class PostgresSyncProvider(SyncProvider):
 
     def introspect(self, connection: SyncConnection) -> dict[str, Table]:
         """Return the current schema of a live PostgreSQL connection."""
-        from nextorm.schema.introspect import introspect_postgres as _introspect  # noqa: PLC0415
+        from nextorm.schema.introspect import (
+            introspect_postgres as _introspect,  # noqa: PLC0415
+        )
 
         return _introspect(connection)
 

@@ -392,7 +392,14 @@ def test_select_inner_join() -> None:
         columns=(Star(),),
         from_table="order",
         from_alias="o",
-        joins=(("INNER", "user", "u", BinOp(ColumnRef("id", "u"), "=", ColumnRef("user_id", "o"))),),
+        joins=(
+            (
+                "INNER",
+                "user",
+                "u",
+                BinOp(ColumnRef("id", "u"), "=", ColumnRef("user_id", "o")),
+            ),
+        ),
     )
     assert sql(node) == 'SELECT * FROM "order" AS o INNER JOIN user AS u ON u.id = o.user_id'
 

@@ -36,7 +36,13 @@ from nextorm.fields import AttrValue
 if TYPE_CHECKING:
     from nextorm.database import Database
 
-__all__ = ["MigrationRunner", "MigrationStatus", "makemigrations", "migrate", "showmigrations"]
+__all__ = [
+    "MigrationRunner",
+    "MigrationStatus",
+    "makemigrations",
+    "migrate",
+    "showmigrations",
+]
 
 # ---------------------------------------------------------------------------
 # Public types

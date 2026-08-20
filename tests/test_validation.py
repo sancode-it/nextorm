@@ -159,5 +159,10 @@ def test_transaction_error_is_exception() -> None:
 
 
 def test_all_exceptions_subclass_exception() -> None:
-    for cls in (ObjectNotFound, MultipleObjectsFoundError, ConstraintError, TransactionError):
+    for cls in (
+        ObjectNotFound,
+        MultipleObjectsFoundError,
+        ConstraintError,
+        TransactionError,
+    ):
         assert issubclass(cls, Exception)

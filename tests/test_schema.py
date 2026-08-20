@@ -509,7 +509,10 @@ class TestManyToOneFK:
         WithOverride._relations_["parent"] = RelationInfo(
             "parent",
             RelationSpec(
-                kind=RelationKind.SINGLE, target=SAuthor, nullable=True, cascade_delete=True
+                kind=RelationKind.SINGLE,
+                target=SAuthor,
+                nullable=True,
+                cascade_delete=True,
             ),
         )
         table = entity_to_table(WithOverride)
@@ -528,7 +531,10 @@ class TestManyToOneFK:
         WithRestrict._relations_["parent"] = RelationInfo(
             "parent",
             RelationSpec(
-                kind=RelationKind.SINGLE, target=SAuthor, nullable=False, cascade_delete=False
+                kind=RelationKind.SINGLE,
+                target=SAuthor,
+                nullable=False,
+                cascade_delete=False,
             ),
         )
         table = entity_to_table(WithRestrict)
@@ -2058,7 +2064,13 @@ def test_m2m_reverse_columns_list_overrides_join_column() -> None:
     join_tables = {
         name: t
         for name, t in tables.items()
-        if name not in ("_m2mleftrevcolS", "_m2mrightrevcolS", "_m2mleftrevcols", "_m2mrightrevcols")
+        if name
+        not in (
+            "_m2mleftrevcolS",
+            "_m2mrightrevcolS",
+            "_m2mleftrevcols",
+            "_m2mrightrevcols",
+        )
     }
     join_t = next(iter(join_tables.values()))
     col_names = {c.name for c in join_t.columns}

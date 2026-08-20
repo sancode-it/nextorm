@@ -175,7 +175,9 @@ class SQLiteSyncProvider(SyncProvider):
 
     def introspect(self, connection: SyncConnection) -> dict[str, Table]:
         """Return the current schema of a live SQLite connection."""
-        from nextorm.schema.introspect import introspect_sqlite as _introspect  # noqa: PLC0415
+        from nextorm.schema.introspect import (
+            introspect_sqlite as _introspect,  # noqa: PLC0415
+        )
 
         return _introspect(connection)
 

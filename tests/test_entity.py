@@ -1816,9 +1816,7 @@ def test_entity_select_three_level_chain() -> None:
         _RelFieldOwner(data="root", sibling=s)
     with db_session:
         # 3-level: owner → sibling → target.name
-        results = _RelFieldOwner.select(
-            lambda o: o.sibling.target.name == "DeepLeaf"
-        ).fetch_all()
+        results = _RelFieldOwner.select(lambda o: o.sibling.target.name == "DeepLeaf").fetch_all()
         assert len(results) == 1
         assert results[0].data == "root"
     db.close()
@@ -3183,7 +3181,12 @@ def test_o2o_reverse_lookup_reverse_name_not_found_falls_back_to_search() -> Non
     # Then if rev_ri is None: True → fall back to for-loop search
     ri_with_bad_reverse = RelationInfo(
         "config",
-        _RS(kind=_RK.SINGLE, target=_O2OReverseConfig, nullable=True, reverse="nonexistent"),
+        _RS(
+            kind=_RK.SINGLE,
+            target=_O2OReverseConfig,
+            nullable=True,
+            reverse="nonexistent",
+        ),
     )
     desc_with_bad_reverse = SingleDescriptor("config", ri_with_bad_reverse)
 

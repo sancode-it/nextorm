@@ -660,6 +660,7 @@ def test_avg_with_filter() -> None:
     expected = (200.0 + 150.0) / 2
     assert result == _pytest.approx(expected)
 
+
 def test_avg_empty_result_returns_none() -> None:
     """avg() on zero matching rows returns None."""
     result = avg(w.price for w in GenWidget if w.price > 9999.0)
@@ -1216,7 +1217,10 @@ def test_decompile_load_global_found_in_func_globals() -> None:
     gen = (w for w in GenWidget if w.price > _gen_test_threshold)
     assert isinstance(gen, types.GeneratorType)
     condition, _ = _decompile_condition(
-        gen.gi_code, free_vars={}, entity_cls=GenWidget, func_globals={"_gen_test_threshold": 50.0}
+        gen.gi_code,
+        free_vars={},
+        entity_cls=GenWidget,
+        func_globals={"_gen_test_threshold": 50.0},
     )
     # Decompile succeeds: val=50.0 from func_globals
     assert condition is not None

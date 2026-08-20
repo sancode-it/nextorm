@@ -1869,7 +1869,9 @@ def test_for_update_nowait_renders_in_sql(seeded_db: Database) -> None:
     assert "NOWAIT" in sql
 
 
-def test_for_update_nowait_and_skip_locked_mutual_exclusive(seeded_db: Database) -> None:
+def test_for_update_nowait_and_skip_locked_mutual_exclusive(
+    seeded_db: Database,
+) -> None:
     """for_update(nowait=True, skip_locked=True) raises ValueError."""
     import pytest as _pytest
 
@@ -2087,7 +2089,9 @@ def test_raw_query_composite_fk_encodes_components(raw_test_db: Database) -> Non
     assert results[0].note == "raw-grade-note"
 
 
-def test_lazy_entity_with_non_owning_o2o_explicit_col_map(raw_test_db: Database) -> None:
+def test_lazy_entity_with_non_owning_o2o_explicit_col_map(
+    raw_test_db: Database,
+) -> None:
     """Lazy entity with non-owning O2O: _build_explicit_column_map skips FK col."""
     # _LazyO2OSelf has lazy field → _build_explicit_column_map called
     # partner is non-owning O2O → _is_non_owning_single returns True → continue (line 217)
@@ -2150,7 +2154,9 @@ def test_lazy_entity_explicit_columns_with_join(tmp_path: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_order_by_same_join_deduplicated_on_chained_order_by(chain_db: Database) -> None:
+def test_order_by_same_join_deduplicated_on_chained_order_by(
+    chain_db: Database,
+) -> None:
     """Second order_by call deduplicates a JOIN already added by the first (covers 574->569)."""
     # First order_by adds JOIN on _chainmid; second order_by traverses _chainmid + _chaintop.
     # The dedup in the order_by loop detects the existing _chainmid JOIN and skips it (574->569).
@@ -2182,7 +2188,9 @@ def test_join_deduplicates_same_join(chain_db: Database) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_where_lambda_falls_back_to_proxy_on_decompile_error(seeded_db: Database) -> None:
+def test_where_lambda_falls_back_to_proxy_on_decompile_error(
+    seeded_db: Database,
+) -> None:
     """where() falls back to proxy-based evaluation when _apply_predicate raises DecompileError."""
     from unittest.mock import patch
 
@@ -2195,7 +2203,9 @@ def test_where_lambda_falls_back_to_proxy_on_decompile_error(seeded_db: Database
     assert len(results) > 0
 
 
-def test_where_lambda_uses_proxy_directly_when_entity_cls_is_none(seeded_db: Database) -> None:
+def test_where_lambda_uses_proxy_directly_when_entity_cls_is_none(
+    seeded_db: Database,
+) -> None:
     """where() goes directly to proxy-based eval when table has no entity_cls (covers 518->525)."""
     import dataclasses
 

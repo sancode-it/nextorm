@@ -32,7 +32,9 @@ from nextorm.providers import (
 from nextorm.providers import (
     postgres as _postgres,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
-from nextorm.providers import sqlite as _sqlite  # noqa: F401  # pyright: ignore[reportUnusedImport]
+from nextorm.providers import (
+    sqlite as _sqlite,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+)
 from nextorm.providers.base import (
     AsyncConnection,
     AsyncCursor,

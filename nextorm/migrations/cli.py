@@ -69,7 +69,10 @@ def _load_db(module_name: str, db_attr: str) -> object:
     mod = importlib.import_module(module_name)
     db = getattr(mod, db_attr, None)
     if db is None:
-        print(f"ERROR: attribute '{db_attr}' not found in module '{module_name}'", file=sys.stderr)
+        print(
+            f"ERROR: attribute '{db_attr}' not found in module '{module_name}'",
+            file=sys.stderr,
+        )
         sys.exit(1)
     return db
 
@@ -79,7 +82,11 @@ def main(argv: list[str] | None = None) -> None:
     parser = _get_parser()
     args = parser.parse_args(argv)
 
-    from nextorm.migrations.core import makemigrations, migrate, showmigrations  # noqa: PLC0415
+    from nextorm.migrations.core import (  # noqa: PLC0415
+        makemigrations,
+        migrate,
+        showmigrations,
+    )
 
     db = _load_db(args.module, args.db_attr)
 

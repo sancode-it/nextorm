@@ -241,7 +241,10 @@ class SQLBuilder(ABC):
         if _needs_paren:
             parts.append(")")
         parts.append(f" {node.op} ")
-        _needs_paren_r = isinstance(node.right, BinOp) and node.op.upper() in ("AND", "OR")
+        _needs_paren_r = isinstance(node.right, BinOp) and node.op.upper() in (
+            "AND",
+            "OR",
+        )
         if _needs_paren_r:
             parts.append("(")
         self._emit(node.right, parts, params)

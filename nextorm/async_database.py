@@ -43,9 +43,20 @@ from nextorm.debug import (
     _record_async_capture,
     global_stats,
 )
-from nextorm.entity import _LAZY_SENTINEL, Entity, EntityMeta, _entity_registry, _LazyType
+from nextorm.entity import (
+    _LAZY_SENTINEL,
+    Entity,
+    EntityMeta,
+    _entity_registry,
+    _LazyType,
+)
 from nextorm.exceptions import MappingError, OptimisticCheckError
-from nextorm.fields import RelationKind, _generate_ulid, _generate_uuid7, _serialize_value
+from nextorm.fields import (
+    RelationKind,
+    _generate_ulid,
+    _generate_uuid7,
+    _serialize_value,
+)
 from nextorm.providers.base import (
     AsyncConnection,
     AsyncProvider,
@@ -317,7 +328,9 @@ class AsyncDatabase:
         conn = self._ensure_connection()
 
         if self._provider == "sqlite":
-            from nextorm.schema.introspect import async_introspect_sqlite  # noqa: PLC0415
+            from nextorm.schema.introspect import (
+                async_introspect_sqlite,  # noqa: PLC0415
+            )
 
             current = await async_introspect_sqlite(conn)
         else:  # pragma: no cover
@@ -986,7 +999,9 @@ class AsyncDatabase:
                         fk_val = _get_pk_val(related_entity)
                 if isinstance(fk_val, tuple):
                     # Composite PK FK — expand to multiple column entries
-                    from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+                    from nextorm.entity import (
+                        _derive_composite_fk_cols,  # noqa: PLC0415
+                    )
 
                     fk_col_names = ri.spec.columns or _derive_composite_fk_cols(
                         ri.name, ri.spec.target
@@ -1049,7 +1064,9 @@ class AsyncDatabase:
             if ri.spec.kind == RelationKind.SINGLE:
                 fk_val = vars(entity).get(f"_{ri.name}_id")
                 if isinstance(fk_val, tuple):
-                    from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+                    from nextorm.entity import (
+                        _derive_composite_fk_cols,  # noqa: PLC0415
+                    )
 
                     fk_col_names = ri.spec.columns or _derive_composite_fk_cols(
                         ri.name, ri.spec.target
@@ -1085,7 +1102,10 @@ class AsyncDatabase:
         dbvals: dict[str, Any] | None = vars(entity).get("_dbvals_")
 
         assignments: list[tuple[str, Param]] = [
-            (fi.spec.column or fi.name, Param(value=_serialize_value(getattr(entity, fi.name))))
+            (
+                fi.spec.column or fi.name,
+                Param(value=_serialize_value(getattr(entity, fi.name))),
+            )
             for fi in entity_cls._fields_.values()
             if not fi.spec.primary_key and not fi.spec.volatile
         ]
@@ -1104,7 +1124,9 @@ class AsyncDatabase:
                         fk_val = _get_pk_val(related_entity)
                 if isinstance(fk_val, tuple):
                     # Composite PK FK — expand to multiple column entries
-                    from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+                    from nextorm.entity import (
+                        _derive_composite_fk_cols,  # noqa: PLC0415
+                    )
 
                     fk_col_names = ri.spec.columns or _derive_composite_fk_cols(
                         ri.name, ri.spec.target
@@ -1179,7 +1201,10 @@ class AsyncQuerySet[ET: Entity]:
         db: AsyncDatabase,
         builder: SQLBuilder,
     ) -> None:
-        from nextorm.query import _build_column_map, _build_explicit_column_map  # noqa: PLC0415
+        from nextorm.query import (  # noqa: PLC0415
+            _build_column_map,
+            _build_explicit_column_map,
+        )
 
         self._entity_class = entity_class
         self._table = table
@@ -1682,7 +1707,10 @@ class AsyncQuerySet[ET: Entity]:
                 continue
 
             target = ri.spec.target
-            from nextorm.entity import _matches_entity, _resolve_entity_target  # noqa: PLC0415
+            from nextorm.entity import (  # noqa: PLC0415
+                _matches_entity,
+                _resolve_entity_target,
+            )
 
             resolved = _resolve_entity_target(target)
             if resolved is None:
@@ -1702,7 +1730,8 @@ class AsyncQuerySet[ET: Entity]:
                 owner_col = f"{owner_cls._table_name_}_id"
                 inline = ", ".join(ph for _ in owner_pks)
                 join_rows = await self._db._execute(
-                    f"SELECT * FROM {join_table} WHERE {owner_col} IN ({inline})", owner_pks
+                    f"SELECT * FROM {join_table} WHERE {owner_col} IN ({inline})",
+                    owner_pks,
                 )
                 target_pks_for: dict[Any, list[Any]] = {}
                 for jrow in join_rows:
@@ -1889,7 +1918,9 @@ class AsyncQuerySet[ET: Entity]:
                 if ri.spec.kind == RelationKind.SINGLE:
                     fk_val = vars(obj).get(f"_{ri.name}_id")
                     if isinstance(fk_val, tuple):
-                        from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+                        from nextorm.entity import (
+                            _derive_composite_fk_cols,  # noqa: PLC0415
+                        )
 
                         fk_col_names = ri.spec.columns or _derive_composite_fk_cols(
                             ri.name, ri.spec.target

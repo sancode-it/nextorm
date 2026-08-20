@@ -46,10 +46,24 @@ from nextorm.providers.base import (
 )
 from nextorm.schema.builder import build_schema
 from nextorm.schema.core import Table
-from nextorm.schema.ddl import DDLRenderer, MariaDBRenderer, PostgresRenderer, SQLiteRenderer
+from nextorm.schema.ddl import (
+    DDLRenderer,
+    MariaDBRenderer,
+    PostgresRenderer,
+    SQLiteRenderer,
+)
 from nextorm.schema.diff import diff_schemas
 from nextorm.sql.builder import PARAM_STYLE_BUILDERS, SQLBuilder, SQLiteBuilder
-from nextorm.sql.nodes import BinOp, ColumnRef, Delete, Insert, Literal, Param, Select, Update
+from nextorm.sql.nodes import (
+    BinOp,
+    ColumnRef,
+    Delete,
+    Insert,
+    Literal,
+    Param,
+    Select,
+    Update,
+)
 
 if TYPE_CHECKING:
     from nextorm.query import QuerySet
@@ -850,7 +864,10 @@ class Database:
         # ------------------------------------------------------------------
         # Cascade: process Set relations before the main DELETE.
         # ------------------------------------------------------------------
-        from nextorm.entity import _matches_entity, _resolve_entity_target  # noqa: PLC0415
+        from nextorm.entity import (  # noqa: PLC0415
+            _matches_entity,
+            _resolve_entity_target,
+        )
         from nextorm.fields import RelationKind  # noqa: PLC0415
 
         owner_table = entity_cls._table_name_
@@ -944,7 +961,9 @@ class Database:
                 if should_cascade:
                     # Cascade delete: find and delete all children.
                     # Build the WHERE condition, handling composite PK owners.
-                    from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+                    from nextorm.entity import (
+                        _derive_composite_fk_cols,  # noqa: PLC0415
+                    )
 
                     if isinstance(pk_val, tuple):
                         fk_col_names = _derive_composite_fk_cols(back_ref.name, entity_cls)
@@ -1284,7 +1303,9 @@ class Database:
                         fk_val = _get_pk_val(related_entity)
                 if isinstance(fk_val, tuple):
                     # Composite PK FK — expand to multiple column entries
-                    from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+                    from nextorm.entity import (
+                        _derive_composite_fk_cols,  # noqa: PLC0415
+                    )
 
                     fk_col_names = ri.spec.columns or _derive_composite_fk_cols(
                         ri.name, ri.spec.target
@@ -1347,7 +1368,9 @@ class Database:
             if ri.spec.kind == RelationKind.SINGLE:
                 fk_val = vars(entity).get(f"_{ri.name}_id")
                 if isinstance(fk_val, tuple):
-                    from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+                    from nextorm.entity import (
+                        _derive_composite_fk_cols,  # noqa: PLC0415
+                    )
 
                     fk_col_names = ri.spec.columns or _derive_composite_fk_cols(
                         ri.name, ri.spec.target
@@ -1401,7 +1424,10 @@ class Database:
             f for f in entity_cls._pk_fields_ if f in entity_cls._fields_
         )
         assignments: list[tuple[str, Param]] = [
-            (fi.spec.column or fi.name, Param(value=_serialize_value(getattr(entity, fi.name))))
+            (
+                fi.spec.column or fi.name,
+                Param(value=_serialize_value(getattr(entity, fi.name))),
+            )
             for fi in entity_cls._fields_.values()
             if not fi.spec.primary_key and not fi.spec.volatile and fi.name not in scalar_pk_names
         ]
@@ -1421,7 +1447,9 @@ class Database:
                         fk_val = _get_pk_val(related_entity)
                 if isinstance(fk_val, tuple):
                     # Composite PK FK — expand to multiple column entries
-                    from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+                    from nextorm.entity import (
+                        _derive_composite_fk_cols,  # noqa: PLC0415
+                    )
 
                     fk_col_names = ri.spec.columns or _derive_composite_fk_cols(
                         ri.name, ri.spec.target

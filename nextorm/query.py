@@ -239,7 +239,10 @@ def _build_column_map_from_names(entity_cls: type[Entity], col_names: list[str])
     Used by :meth:`QuerySet.raw` to match raw-SQL result columns to entity
     fields by name rather than by position.
     """
-    from nextorm.entity import _derive_composite_fk_cols, _resolve_entity_target  # noqa: PLC0415
+    from nextorm.entity import (  # noqa: PLC0415
+        _derive_composite_fk_cols,
+        _resolve_entity_target,
+    )
 
     col_to_field: dict[str, str] = {}
     for fi in entity_cls._fields_.values():
@@ -277,7 +280,10 @@ def _build_column_map(entity_cls: type[Entity], table: Table) -> list[str | None
     form ``"_<rel>_id\\x1f<index>\\x1f<total>"`` so that :meth:`QuerySet._map_row`
     can reconstruct the tuple FK value.
     """
-    from nextorm.entity import _derive_composite_fk_cols, _resolve_entity_target  # noqa: PLC0415
+    from nextorm.entity import (  # noqa: PLC0415
+        _derive_composite_fk_cols,
+        _resolve_entity_target,
+    )
 
     col_to_field: dict[str, str] = {}
     for fi in entity_cls._fields_.values():
@@ -316,7 +322,10 @@ def _build_explicit_column_map(
         Parallel list of field-name strings (or ``'_<rel>_id'`` for FK
         columns) in the same positional order as *columns*.
     """
-    from nextorm.entity import _derive_composite_fk_cols, _resolve_entity_target  # noqa: PLC0415
+    from nextorm.entity import (  # noqa: PLC0415
+        _derive_composite_fk_cols,
+        _resolve_entity_target,
+    )
 
     cols: list[ColumnRef] = []
     col_map: list[str | None] = []
@@ -1192,7 +1201,10 @@ class QuerySet[ET: Entity]:
                 for f in pk_fields
             ]
             pk_idxs: list[int | None] = [
-                next((i for i, c in enumerate(self._table.columns) if c.name == pkcn), None)
+                next(
+                    (i for i, c in enumerate(self._table.columns) if c.name == pkcn),
+                    None,
+                )
                 for pkcn in pk_col_names
             ]
             if all(idx is not None for idx in pk_idxs):  # pragma: no branch
@@ -1250,7 +1262,9 @@ class QuerySet[ET: Entity]:
                 if ri.spec.kind == RelationKind.SINGLE:
                     fk_val = vars(obj).get(f"_{ri.name}_id")
                     if isinstance(fk_val, tuple):
-                        from nextorm.entity import _derive_composite_fk_cols  # noqa: PLC0415
+                        from nextorm.entity import (
+                            _derive_composite_fk_cols,  # noqa: PLC0415
+                        )
 
                         fk_col_names = _derive_composite_fk_cols(ri.name, ri.spec.target)
                         _fk_tuple = cast("tuple[Any, ...]", fk_val)  # type: ignore[redundant-cast]
@@ -1329,7 +1343,10 @@ class QuerySet[ET: Entity]:
                 continue
 
             target = ri.spec.target
-            from nextorm.entity import _matches_entity, _resolve_entity_target  # noqa: PLC0415
+            from nextorm.entity import (  # noqa: PLC0415
+                _matches_entity,
+                _resolve_entity_target,
+            )
 
             resolved = _resolve_entity_target(target)
             if resolved is None:
