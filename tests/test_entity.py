@@ -1817,7 +1817,7 @@ def test_entity_select_three_level_chain() -> None:
     with db_session:
         # 3-level: owner → sibling → target.name
         results = _RelFieldOwner.select(
-            lambda o: o.sibling.target.name == "DeepLeaf"  # pyright: ignore[reportUnknownVariableType,reportUnknownLambdaType,reportUnknownMemberType]
+            lambda o: o.sibling.target.name == "DeepLeaf"
         ).fetch_all()
         assert len(results) == 1
         assert results[0].data == "root"

@@ -1095,7 +1095,7 @@ async def test_async_aggregations() -> None:
             await db.asave(AsyncUser(name=f"u{age}", age=age))
         qs = db.aselect(AsyncUser)
         assert await qs.sum("age") == 60
-        assert await qs.avg("age") == pytest.approx(20.0)  # pyright: ignore[reportUnknownMemberType]
+        assert await qs.avg("age") == pytest.approx(20.0)
         assert await qs.min("age") == 10
         assert await qs.max("age") == 30
 
@@ -1132,7 +1132,7 @@ async def test_async_where_chainable() -> None:
         await db.generate_mapping(create_tables=True)
         await db.asave(AsyncUser(name="old", age=50))
         await db.asave(AsyncUser(name="young", age=10))
-        results = await db.aselect(AsyncUser).where(lambda u: u.age > 20).fetch_all()  # pyright: ignore[reportUnknownLambdaType, reportUnknownMemberType]
+        results = await db.aselect(AsyncUser).where(lambda u: u.age > 20).fetch_all()
         assert len(results) == 1
         assert results[0].name == "old"
 
@@ -1170,7 +1170,7 @@ async def test_async_where_uses_decompilation() -> None:
         await db.asave(AsyncUser(name="alice", age=30))
         await db.asave(AsyncUser(name="bob", age=20))
         # Decompilation path: generator-style predicate
-        results = await db.aselect(AsyncUser).where(lambda u: u.name == "alice").fetch_all()  # pyright: ignore[reportUnknownLambdaType, reportUnknownMemberType]
+        results = await db.aselect(AsyncUser).where(lambda u: u.name == "alice").fetch_all()
         assert len(results) == 1
         assert results[0].name == "alice"
 
@@ -1191,7 +1191,7 @@ async def test_async_where_falls_back_to_proxy_on_decompile_error() -> None:
             raise DecompileError("forced")
 
         with patch("nextorm.generators._apply_predicate", side_effect=_raise):
-            results = await db.aselect(AsyncUser).where(lambda u: u.age > 25).fetch_all()  # pyright: ignore[reportUnknownLambdaType, reportUnknownMemberType]
+            results = await db.aselect(AsyncUser).where(lambda u: u.age > 25).fetch_all()
         assert len(results) == 1
         assert results[0].name == "alice"
 
@@ -2737,7 +2737,7 @@ async def test_async_prefetch_invalid_attr_raises() -> None:
         await db.bind("sqlite", ":memory:")
         await db.generate_mapping(create_tables=True)
         with pytest.raises(ValueError, match="Cannot determine relation name"):
-            db.aselect(_APrefetchAuthor).prefetch(42)  # pyright: ignore
+            db.aselect(_APrefetchAuthor).prefetch(42)
 
 
 @pytest.mark.asyncio
@@ -3011,7 +3011,7 @@ async def test_async_prefetch_single_no_pk_skipped() -> None:
     orig_pk_field = _ANoPKTarget._pk_field_
     orig_pk_fields = _ANoPKTarget._pk_fields_
     try:
-        _ANoPKTarget._pk_field_ = None  # pyright: ignore
+        _ANoPKTarget._pk_field_ = None
         _ANoPKTarget._pk_fields_ = ()
         results = await db.aselect(_ANoPKOwner).prefetch("ref").fetch_all()
         assert len(results) == 1

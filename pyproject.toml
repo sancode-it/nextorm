@@ -116,4 +116,5 @@ strict = true
 python_version = "3.12"
 files = ["nextorm", "tests", "stubs"]
 mypy_path = "stubs"
+warn_unused_ignores = true
 # TypeAliasType subscripts (PEP 695) are transparent to mypy — no special plugin needed.

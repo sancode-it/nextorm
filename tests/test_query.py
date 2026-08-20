@@ -1535,22 +1535,22 @@ def test_for_update_skip_locked_renders_in_sql(seeded_db: Database) -> None:
 
 def test_sum_returns_total(seeded_db: Database) -> None:
     total = seeded_db.select(Product).sum("price")
-    assert total == pytest.approx(9.99 + 24.99 + 4.99)  # pyright: ignore[reportUnknownMemberType]
+    assert total == pytest.approx(9.99 + 24.99 + 4.99)
 
 
 def test_avg_returns_average(seeded_db: Database) -> None:
     avg = seeded_db.select(Product).avg("price")
-    assert avg == pytest.approx((9.99 + 24.99 + 4.99) / 3)  # pyright: ignore[reportUnknownMemberType]
+    assert avg == pytest.approx((9.99 + 24.99 + 4.99) / 3)
 
 
 def test_min_returns_minimum(seeded_db: Database) -> None:
     mn = seeded_db.select(Product).min("price")
-    assert mn == pytest.approx(4.99)  # pyright: ignore[reportUnknownMemberType]
+    assert mn == pytest.approx(4.99)
 
 
 def test_max_returns_maximum(seeded_db: Database) -> None:
     mx = seeded_db.select(Product).max("price")
-    assert mx == pytest.approx(24.99)  # pyright: ignore[reportUnknownMemberType]
+    assert mx == pytest.approx(24.99)
 
 
 def test_sum_no_rows_returns_none(db: Database) -> None:

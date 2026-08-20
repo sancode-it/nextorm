@@ -202,7 +202,7 @@ class RelatedCollection[ET: Entity]:
                         cond = BinOp(
                             cond,
                             "AND",
-                            BinOp(ColumnRef(col_name), "=", Param(value=pk_part)),  # pyright: ignore[reportUnknownArgumentType]
+                            BinOp(ColumnRef(col_name), "=", Param(value=pk_part)),
                         )
                     return qs.filter(cond)
 
@@ -405,7 +405,7 @@ class RelatedCollection[ET: Entity]:
             from nextorm.generators import _apply_predicate  # noqa: PLC0415
 
             target_cls = self._resolve_target()
-            qs = _apply_predicate(qs, predicate, target_cls)  # pyright: ignore[reportUnknownMemberType,reportReturnType]
+            qs = _apply_predicate(qs, predicate, target_cls)
         for cond in conditions:
             qs = qs.filter(cond)
         for field, value in kwargs.items():

@@ -751,7 +751,7 @@ def _decompile_condition(
                 )
             # All args must be resolved "name" items
             evaluated_args = []
-            for a in args:  # pyright: ignore[reportUnknownVariableType]
+            for a in args:
                 if a.kind == "name":
                     evaluated_args.append(a.value)  # pyright: ignore[reportUnknownMemberType]
                 else:
@@ -1062,7 +1062,7 @@ def sum(gen: Generator[Any, None, None]) -> Any:  # noqa: A001
     if not _is_entity_generator(gen):
         import builtins  # noqa: PLC0415
 
-        return builtins.sum(gen)  # pyright: ignore
+        return builtins.sum(gen)
     field_name = _decompile_yield_attr(gen.gi_code)
     if field_name is None:
         raise DecompileError(
@@ -1094,7 +1094,7 @@ def min(gen: Generator[Any, None, None]) -> Any:
     if not _is_entity_generator(gen):
         import builtins  # noqa: PLC0415
 
-        return builtins.min(gen)  # pyright: ignore
+        return builtins.min(gen)
     field_name = _decompile_yield_attr(gen.gi_code)
     if field_name is None:
         raise DecompileError(

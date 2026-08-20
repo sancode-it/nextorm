@@ -846,8 +846,8 @@ def test_collection_select_with_predicate(o2m_db: Database) -> None:
         post = ColPost(title="Select Pred")
     post.comments.add(ColComment(text="yes"))
     post.comments.add(ColComment(text="no"))
-    results = post.comments.select(  # pyright: ignore[reportUnknownLambdaType,reportUnknownMemberType]
-        lambda c: c.text == "yes"  # pyright: ignore[reportUnknownLambdaType,reportUnknownMemberType]
+    results = post.comments.select(
+        lambda c: c.text == "yes"
     ).fetch_all()
     assert len(results) == 1
     assert results[0].text == "yes"
@@ -889,8 +889,8 @@ def test_collection_select_combined(o2m_db: Database) -> None:
     post.comments.add(ColComment(text="no"))
     post.comments.add(ColComment(text="maybe"))
     cond = BinOp(ColumnRef("id"), ">", Param(value=0))
-    results = post.comments.select(  # pyright: ignore[reportUnknownLambdaType,reportUnknownMemberType]
-        lambda c: c.text != "no",  # pyright: ignore[reportUnknownLambdaType,reportUnknownMemberType]
+    results = post.comments.select(
+        lambda c: c.text != "no",
         cond,
         text="yes",
     ).fetch_all()
@@ -931,8 +931,8 @@ def test_collection_where_with_callable_predicate(o2m_db: Database) -> None:
         post = ColPost(title="Where Lambda")
     post.comments.add(ColComment(text="yes"))
     post.comments.add(ColComment(text="no"))
-    results = post.comments.where(  # pyright: ignore[reportUnknownLambdaType,reportUnknownMemberType]
-        lambda c: c.text == "yes"  # pyright: ignore[reportUnknownLambdaType,reportUnknownMemberType]
+    results = post.comments.where(
+        lambda c: c.text == "yes"
     ).fetch_all()
     assert len(results) == 1
     assert results[0].text == "yes"

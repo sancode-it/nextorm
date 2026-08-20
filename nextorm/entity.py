@@ -1355,15 +1355,15 @@ class EntityMeta(type):
                     if hasattr(rel_class_val, "_options"):
                         marker_opts = getattr(rel_class_val, "_options", {})
                         _normalize_setopts_reverse_columns(marker_opts, attr_name)
-                        rel_spec = RelationSpec(kind=kind, target=target, **marker_opts)  # pyright: ignore[reportArgumentType]
+                        rel_spec = RelationSpec(kind=kind, target=target, **marker_opts)
                     elif isinstance(rel_class_val, RelationSpec):
                         rel_spec = dataclasses.replace(
                             rel_class_val,
                             kind=kind,
-                            target=target,  # pyright: ignore[reportArgumentType]
+                            target=target,
                         )
                     else:
-                        rel_spec = RelationSpec(kind=kind, target=target)  # pyright: ignore[reportArgumentType]
+                        rel_spec = RelationSpec(kind=kind, target=target)
                     ri = RelationInfo(attr_name, rel_spec)
                     relations[attr_name] = ri
                     setattr(cls, attr_name, SetDescriptor(attr_name, ri))
@@ -1578,7 +1578,7 @@ class EntityMeta(type):
         else:
             # Composite PK: normalize each element in the tuple
             normalized: list[Any] = []
-            for val in pk_tuple2:  # pyright: ignore[reportOptionalIterable]
+            for val in pk_tuple2:
                 if isinstance(val, Entity):
                     normalized.append(_get_pk_val(val))
                 else:
@@ -1612,7 +1612,7 @@ class EntityMeta(type):
                         ):  # pragma: no cover — tuple elements from _get_pk_val are always scalars
                             norm2.append(_get_pk_val(val))
                         else:
-                            norm2.append(val)  # pyright: ignore[reportUnknownArgumentType]
+                            norm2.append(val)
                     entity_pk = tuple(norm2)
 
                 if entity.__class__ is cls and entity_pk == (  # pyright: ignore[reportUnnecessaryComparison]
@@ -2102,7 +2102,7 @@ class Entity(metaclass=EntityMeta):
         /,
         *conditions: SqlNode,
         **kwargs: Any,
-    ) -> QuerySet[Self]:  # pyright: ignore[reportReturnType]
+    ) -> QuerySet[Self]:
         """Return a :class:`~nextorm.query.QuerySet` for this entity.
 
         Locates the mapped database automatically.  Chain filter, ordering, and
@@ -2142,7 +2142,7 @@ class Entity(metaclass=EntityMeta):
         /,
         *conditions: SqlNode,
         **kwargs: Any,
-    ) -> AsyncQuerySet[Self]:  # pyright: ignore[reportReturnType]
+    ) -> AsyncQuerySet[Self]:
         """Return an :class:`~nextorm.async_database.AsyncQuerySet` for this entity.
 
         Returns the queryset synchronously — no ``await`` needed on this call.

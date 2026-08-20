@@ -880,7 +880,7 @@ class Database:
                         rev_fk_col = rev_ri.spec.column or f"{reverse_name}_id"
                         # Find related entity on target where rev_fk_col = our pk
                         cond = BinOp(ColumnRef(rev_fk_col), "=", Param(value=pk_val))
-                        related = self.select(target_cls).filter(cond).fetch_one()  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+                        related = self.select(target_cls).filter(cond).fetch_one()  # type: ignore[arg-type]
                         if related is not None:
                             self.delete_instance(related)  # pyright: ignore[reportUnknownArgumentType]
                 continue
@@ -956,12 +956,12 @@ class Database:
                                 cascade_cond = BinOp(
                                     cascade_cond,
                                     "AND",
-                                    BinOp(ColumnRef(_col), "=", Param(value=_pv)),  # pyright: ignore[reportUnknownArgumentType]
+                                    BinOp(ColumnRef(_col), "=", Param(value=_pv)),
                                 )
                         else:  # pragma: no cover — fk_col_names/pk_val mismatch; defensive fallback
                             cascade_cond = BinOp(ColumnRef(fk_col), "=", Param(value=pk_val))
                     else:
-                        cascade_cond = BinOp(ColumnRef(fk_col), "=", Param(value=pk_val))  # pyright: ignore[reportUnknownArgumentType]
+                        cascade_cond = BinOp(ColumnRef(fk_col), "=", Param(value=pk_val))
                     for child in self.select(target_cls).filter(cascade_cond).fetch_all():  # type: ignore[arg-type, var-annotated]
                         self.delete_instance(child)  # pyright: ignore[reportUnknownArgumentType]
                 else:

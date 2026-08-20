@@ -649,7 +649,7 @@ def test_avg_returns_average() -> None:
 
     result = avg(w.price for w in GenWidget)
     expected = (50.0 + 200.0 + 150.0) / 3
-    assert result == _pytest.approx(expected)  # pyright: ignore[reportUnknownMemberType]
+    assert result == _pytest.approx(expected)
 
 
 def test_avg_with_filter() -> None:
@@ -658,8 +658,7 @@ def test_avg_with_filter() -> None:
 
     result = avg(w.price for w in GenWidget if w.price > 100.0)
     expected = (200.0 + 150.0) / 2
-    assert result == _pytest.approx(expected)  # pyright: ignore[reportUnknownMemberType]
-
+    assert result == _pytest.approx(expected)
 
 def test_avg_empty_result_returns_none() -> None:
     """avg() on zero matching rows returns None."""
@@ -676,7 +675,7 @@ def test_avg_entity_gen_raises_decompile_error() -> None:
 def test_avg_non_generator_raises() -> None:
     """avg() called with a non-generator raises AssertionError."""
     with pytest.raises(AssertionError):
-        avg([1, 2, 3])  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+        avg([1, 2, 3])  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -734,7 +733,7 @@ def test_sum_entity_gen_raises_decompile_error() -> None:
 def test_sum_non_generator_raises() -> None:
     """sum() called with a non-generator raises AssertionError."""
     with pytest.raises(AssertionError):
-        sum([1, 2, 3])  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+        sum([1, 2, 3])  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -769,7 +768,7 @@ def test_min_entity_gen_raises_decompile_error() -> None:
 def test_min_non_generator_raises() -> None:
     """min() called with a non-generator raises AssertionError."""
     with pytest.raises(AssertionError):
-        min([1, 2, 3])  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+        min([1, 2, 3])  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -804,7 +803,7 @@ def test_max_entity_gen_raises_decompile_error() -> None:
 def test_max_non_generator_raises() -> None:
     """max() called with a non-generator raises AssertionError."""
     with pytest.raises(AssertionError):
-        max([1, 2, 3])  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+        max([1, 2, 3])  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -1017,7 +1016,7 @@ def test_select_val_in_col_upper_generates_like() -> None:
 def test_select_bare_entity_method_call_raises_decompile_error() -> None:
     """w.lower() — method on entity (not field) raises DecompileError (lines 738-742)."""
     with pytest.raises(DecompileError, match="requires attribute context"):
-        select(w for w in GenWidget if w.lower() == "cheap").fetch_all()  # pyright: ignore
+        select(w for w in GenWidget if w.lower() == "cheap").fetch_all()
 
 
 # ---------------------------------------------------------------------------
@@ -1032,7 +1031,7 @@ def test_select_entity_in_m2m_set_generates_exists() -> None:
     assert tag is not None
 
     # select articles where tag is in article.tags → M2M EXISTS
-    results = select(a for a in GenArticle if tag in a.tags).fetch_all()  # pyright: ignore
+    results = select(a for a in GenArticle if tag in a.tags).fetch_all()
     assert len(results) == 1
     assert results[0].title == "intro"
 
@@ -1047,7 +1046,7 @@ def test_select_entity_in_m2m_set_no_match() -> None:
     tag = gen_m2m_db.select(GenTag).filter(GenTag.label == "orphan").fetch_one()
     assert tag is not None
 
-    results = select(a for a in GenArticle if tag in a.tags).fetch_all()  # pyright: ignore
+    results = select(a for a in GenArticle if tag in a.tags).fetch_all()
     assert len(results) == 0
 
 
@@ -1058,7 +1057,7 @@ def test_select_entity_in_m2m_set_no_match() -> None:
 
 def test_select_val_in_o2m_field_generates_exists() -> None:
     """'True in post.comments.active' → EXISTS (SELECT 1 FROM gen_comment ...) (lines 640-688)."""
-    results = select(p for p in GenPost if True in p.comments.active).fetch_all()  # pyright: ignore
+    results = select(p for p in GenPost if True in p.comments.active).fetch_all()
     # Our post has an active comment → should be found
     assert len(results) == 1
     assert results[0].title == "MyPost"
@@ -1089,7 +1088,7 @@ def test_select_free_var_function_call_raises_on_non_name_arg() -> None:
 
     with pytest.raises(DecompileError):
         # w.price > 0 creates a "node" item which is not "name"/"attr"/"rel_chain"
-        select(w for w in GenWidget if some_func(w.price > 0)).fetch_all()  # pyright: ignore
+        select(w for w in GenWidget if some_func(w.price > 0)).fetch_all()
 
 
 def test_select_free_var_function_non_callable_raises() -> None:
@@ -1097,7 +1096,7 @@ def test_select_free_var_function_non_callable_raises() -> None:
     # 'len' is a builtin not in gen.gi_frame.f_globals → resolves to None → not callable
     prices_list = [50.0, 200.0]
     with pytest.raises(DecompileError):
-        select(w for w in GenWidget if len(prices_list) > 0).fetch_all()  # pyright: ignore
+        select(w for w in GenWidget if len(prices_list) > 0).fetch_all()
 
 
 def test_select_free_var_function_call_raises_on_exception() -> None:
@@ -1230,7 +1229,7 @@ def test_decompile_load_global_found_in_func_globals() -> None:
 
 def test_select_int_in_col_lower_falls_through_to_generic() -> None:
     """Non-str val in col.lower() → condition 563 False → falls through → DecompileError."""
-    gen = (w for w in GenWidget if 5 in w.name.lower())  # pyright: ignore
+    gen = (w for w in GenWidget if 5 in w.name.lower())
     assert isinstance(gen, types.GeneratorType)
     with pytest.raises(DecompileError):
         _decompile_condition(gen.gi_code, free_vars={}, entity_cls=GenWidget, func_globals={})
@@ -1243,7 +1242,7 @@ def test_select_int_in_col_lower_falls_through_to_generic() -> None:
 
 def test_select_val_in_scalar_field_falls_through() -> None:
     """'x' in w.name — name is not a relation → rel is None → 577 False → falls to 630 (577->630)."""
-    gen = (w for w in GenWidget if "x" in w.name)  # pyright: ignore
+    gen = (w for w in GenWidget if "x" in w.name)
     assert isinstance(gen, types.GeneratorType)
     condition, _ = _decompile_condition(
         gen.gi_code, free_vars={}, entity_cls=GenWidget, func_globals={}
@@ -1259,7 +1258,7 @@ def test_select_val_in_scalar_field_falls_through() -> None:
 
 def test_select_val_in_single_rel_falls_through() -> None:
     """entity in i.brand where brand is SINGLE → rel.spec.kind != SET → 584 False → 630 (584->630)."""
-    gen = (i for i in GenItem if "x" in i.brand)  # pyright: ignore
+    gen = (i for i in GenItem if "x" in i.brand)
     assert isinstance(gen, types.GeneratorType)
     condition, _ = _decompile_condition(
         gen.gi_code, free_vars={}, entity_cls=GenItem, func_globals={}
@@ -1274,7 +1273,7 @@ def test_select_val_in_single_rel_falls_through() -> None:
 
 def test_select_entity_in_unresolvable_set_falls_through() -> None:
     """SET relation with unresolvable forward ref → target_cls=None → 587 False (587->630)."""
-    gen = (g for g in GenBadSet if "x" in g.ghosts)  # pyright: ignore
+    gen = (g for g in GenBadSet if "x" in g.ghosts)
     assert isinstance(gen, types.GeneratorType)
     condition, _ = _decompile_condition(
         gen.gi_code, free_vars={}, entity_cls=GenBadSet, func_globals={}
@@ -1290,7 +1289,7 @@ def test_select_entity_in_unresolvable_set_falls_through() -> None:
 def test_select_entity_in_o2m_relation_falls_through() -> None:
     """Entity in O2M set (not M2M) → is_m2m=False → 597 False → falls to 630 (597->630)."""
     comment = gen_o2m_db.select(GenComment).fetch_one()
-    gen = (p for p in GenPost if comment in p.comments)  # pyright: ignore
+    gen = (p for p in GenPost if comment in p.comments)
     assert isinstance(gen, types.GeneratorType)
     condition, _ = _decompile_condition(
         gen.gi_code, free_vars={}, entity_cls=GenPost, func_globals={}
@@ -1305,7 +1304,7 @@ def test_select_entity_in_o2m_relation_falls_through() -> None:
 
 def test_select_int_in_m2m_set_skips_entity_pk_extract() -> None:
     """Integer val in M2M set: isinstance(val, Entity) is False → 612->616 (skip pk extract)."""
-    gen = (a for a in GenArticle if 1 in a.tags)  # pyright: ignore
+    gen = (a for a in GenArticle if 1 in a.tags)
     assert isinstance(gen, types.GeneratorType)
     condition, _ = _decompile_condition(
         gen.gi_code, free_vars={}, entity_cls=GenArticle, func_globals={}
@@ -1320,7 +1319,7 @@ def test_select_int_in_m2m_set_skips_entity_pk_extract() -> None:
 
 def test_select_val_in_nonexistent_rel_chain_falls_through() -> None:
     """val in w.nonexistent.field → no such relation → rel is None → 636 False (636->691)."""
-    gen = (w for w in GenWidget if "x" in w.nonexistent.value)  # pyright: ignore
+    gen = (w for w in GenWidget if "x" in w.nonexistent.value)
     # Falls through to 691, then to_node raises because the chain can't resolve
     assert isinstance(gen, types.GeneratorType)
     with pytest.raises(DecompileError):
@@ -1334,7 +1333,7 @@ def test_select_val_in_nonexistent_rel_chain_falls_through() -> None:
 
 def test_select_val_in_single_rel_chain_falls_through() -> None:
     """val in i.brand.name where brand is SINGLE → rel.spec.kind != SET → 640 False (640->691)."""
-    gen = (i for i in GenItem if "x" in i.brand.name)  # pyright: ignore
+    gen = (i for i in GenItem if "x" in i.brand.name)
     assert isinstance(gen, types.GeneratorType)
     condition, _ = _decompile_condition(
         gen.gi_code, free_vars={}, entity_cls=GenItem, func_globals={}
@@ -1349,7 +1348,7 @@ def test_select_val_in_single_rel_chain_falls_through() -> None:
 
 def test_select_val_in_unresolvable_set_chain_falls_through() -> None:
     """val in bad_set.ghosts.x → SET but target unresolvable → target_cls=None → 643 False."""
-    gen = (g for g in GenBadSet if True in g.ghosts.x)  # pyright: ignore
+    gen = (g for g in GenBadSet if True in g.ghosts.x)
     # Falls through to 691, then to_node raises because it can't resolve the chain target
     assert isinstance(gen, types.GeneratorType)
     with pytest.raises(DecompileError):
@@ -1405,7 +1404,7 @@ def test_select_free_var_func_with_attr_arg_raises() -> None:
         return x
 
     with pytest.raises(DecompileError):
-        select(w for w in GenWidget if my_func(w.price) > 0).fetch_all()  # pyright: ignore
+        select(w for w in GenWidget if my_func(w.price) > 0).fetch_all()
 
 
 # ---------------------------------------------------------------------------
