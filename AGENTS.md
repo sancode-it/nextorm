@@ -1,7 +1,7 @@
 # Agent Instructions for NextORM
 
 NextORM is a modern Python ORM with async support, full type annotations, and a
-PonyORM-inspired query DSL. Minimum Python version: **3.12** (tested on 3.12–3.14).
+PonyORM-inspired query DSL. Minimum Python version: **3.12** (tested on 3.12–3.15).
 
 **v0.2 API**: Field declarations use marker-call syntax (`Req(...)`, `Opt(...)`, `Single(...)`,
 `Set(...)`, `Local(...)`) instead of `FieldSpec`/`RelationSpec` class-body definitions.
