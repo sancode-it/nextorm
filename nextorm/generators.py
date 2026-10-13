@@ -426,8 +426,9 @@ def _decompile_condition(
             i += 1
             continue
 
-        if op in ("LOAD_CONST", "LOAD_SMALL_INT"):
-            # LOAD_SMALL_INT is the Python 3.14 optimized opcode for small integers
+        if op in ("LOAD_CONST", "LOAD_SMALL_INT", "LOAD_COMMON_CONSTANT"):
+            # LOAD_SMALL_INT (3.14) and LOAD_COMMON_CONSTANT (3.15) are
+            # optimized variants of LOAD_CONST.
             stack.append(_StackItem("name", instr.argval))
             i += 1
             continue
@@ -824,6 +825,17 @@ def _decompile_condition(
 # ---------------------------------------------------------------------------
 
 
+def _entity_meta_from_iterable(iterable: Any) -> type[Entity] | None:
+    """Return the entity class represented by a generator's initial iterable."""
+    from nextorm.entity import EntityMeta, _EntityIterator  # noqa: PLC0415
+
+    if isinstance(iterable, _EntityIterator):
+        return cast("type[Entity]", iterable.entity_cls)
+    if isinstance(iterable, EntityMeta):
+        return cast("type[Entity]", iterable)
+    return None
+
+
 def select[ET: Entity](gen: Generator[ET, None, None]) -> QuerySet[ET]:
     """Execute a generator-expression query and return a :class:`~nextorm.query.QuerySet`.
 
@@ -846,22 +858,22 @@ def select[ET: Entity](gen: Generator[ET, None, None]) -> QuerySet[ET]:
     RuntimeError
         If the entity class has no associated database context.
     """
-    from nextorm.entity import _EntityIterator  # noqa: PLC0415
-
     assert isinstance(gen, types.GeneratorType)
-    # The generator's frame locals contain the iterator as '.0'
+    # The generator's frame locals contain the iterable as '.0'.  Python 3.15
+    # delays GET_ITER until the generator is advanced, so this can still be
+    # the entity class rather than the _EntityIterator returned by __iter__.
     gi_frame = gen.gi_frame
     if gi_frame is None:
         raise RuntimeError(
             "Generator has already been exhausted. Pass a fresh generator expression to select()."
         )
     iterator = gi_frame.f_locals.get(".0")
-    if not isinstance(iterator, _EntityIterator):
+    entity_meta = _entity_meta_from_iterable(iterator)
+    if entity_meta is None:
         raise RuntimeError(
             "select() requires a generator iterating over an Entity class, "
             f"e.g. select(p for p in MyEntity if ...). Got: {type(iterator)!r}"
         )
-    entity_meta = iterator.entity_cls  # EntityMeta; __name__ resolves via type metaclass
     entity_name: str = entity_meta.__name__
     entity_cls = cast("type[ET]", entity_meta)  # for db.select() which takes type[ET]
 
@@ -985,13 +997,15 @@ def _decompile_yield_attr(code: types.CodeType) -> str | None:
 
 
 def _is_entity_generator(gen: Generator[Any, None, None]) -> bool:
-    """Return True when *gen* is iterating over an ``Entity`` class (via ``_EntityIterator``).
+    """Return True when *gen* is iterating over an ``Entity`` class.
 
     Used by the aggregation helpers (``sum``, ``avg``, ``min``, ``max``,
     ``count``) to decide whether to run the generator through the ORM query
-    pipeline or fall back to the plain Python built-in.
+    pipeline or fall back to the plain Python built-in.  The generator frame
+    contains an ``_EntityIterator`` on earlier Python versions and the entity
+    class itself on Python 3.15, which defers ``GET_ITER`` until first advance.
     """
-    from nextorm.entity import _EntityIterator  # noqa: PLC0415
+    from nextorm.entity import EntityMeta, _EntityIterator  # noqa: PLC0415
 
     if not isinstance(gen, types.GeneratorType):
         return False
@@ -999,7 +1013,7 @@ def _is_entity_generator(gen: Generator[Any, None, None]) -> bool:
     if gi_frame is None:
         return False
     iterator = gi_frame.f_locals.get(".0")
-    return isinstance(iterator, _EntityIterator)
+    return isinstance(iterator, (_EntityIterator, EntityMeta))
 
 
 def count(gen: Any) -> int:

@@ -401,6 +401,20 @@ def test_select_no_filter_returns_all() -> None:
     assert len(rows) == 3
 
 
+def test_select_legacy_entity_iterator_is_supported() -> None:
+    """The iterator-wrapper frame representation remains supported."""
+    from nextorm.entity import _EntityIterator  # noqa: PLC0415
+
+    result = select(w for w in _EntityIterator(GenWidget))
+    assert len(result.fetch_all()) == 3
+
+
+def test_entity_metaclass_is_recognized_as_generator_iterable() -> None:
+    from nextorm.generators import _entity_meta_from_iterable  # noqa: PLC0415
+
+    assert _entity_meta_from_iterable(GenWidget) is GenWidget
+
+
 def test_select_gt_filter() -> None:
     result = select(w for w in GenWidget if w.price > 100.0)
     rows = result.fetch_all()
