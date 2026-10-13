@@ -51,6 +51,7 @@ from nextorm.entity import Entity
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
+    from nextorm.entity import EntityMeta
     from nextorm.query import QuerySet
     from nextorm.sql.nodes import SqlNode
 
@@ -98,6 +99,41 @@ _BINARY_OP_CODES: dict[int, str] = {
     10: "-",  # NB_SUBTRACT
     11: "/",  # NB_TRUE_DIVIDE
 }
+
+# PyPy 3.12 and older CPython bytecode use dedicated binary opcodes.
+_BINARY_OP_NAMES: dict[str, str] = {
+    "BINARY_ADD": "+",
+    "BINARY_MULTIPLY": "*",
+    "BINARY_SUBTRACT": "-",
+    "BINARY_TRUE_DIVIDE": "/",
+}
+
+
+def _resolve_freevar_name(name: str, freevars: tuple[str, ...], index: int | None) -> str:
+    """Resolve PyPy's indexed LOAD_DEREF argument to its free-variable name."""
+    if name in freevars or not isinstance(index, int):
+        return name
+    if index < 0 or index >= len(freevars):
+        return name
+    return freevars[index]
+
+
+def _compare_sql_operator(argval: Any, arg: int | None, is_pypy: bool) -> str | None:
+    """Normalize COMPARE_OP metadata across CPython and PyPy disassemblies."""
+    if is_pypy and isinstance(arg, int):
+        return _RICH_COMPARE_CODES.get(arg & 0xF)
+    if isinstance(argval, int):
+        return _RICH_COMPARE_CODES.get(argval & 0xF)
+    return _COMPARE_OPS.get(str(argval).lower().rstrip(" ("))
+
+
+def _binary_sql_operator(opname: str, argval: Any) -> str | None:
+    """Normalize modern BINARY_OP and legacy BINARY_* instruction names."""
+    if opname != "BINARY_OP":
+        return _BINARY_OP_NAMES.get(opname)
+    if isinstance(argval, int):
+        return _BINARY_OP_CODES.get(argval)
+    return argval if isinstance(argval, str) else None
 
 
 class DecompileError(Exception):
@@ -415,7 +451,11 @@ def _decompile_condition(
 
         if op in ("LOAD_DEREF", "LOAD_GLOBAL", "LOAD_NAME"):
             # Variable from enclosing scope — resolve its value
-            name = instr.argval
+            name = cast("str", instr.argval)
+            if op == "LOAD_DEREF":
+                # PyPy's dis.Instruction.argval can be '.0', while arg indexes
+                # co_freevars; CPython already reports the free-variable name.
+                name = _resolve_freevar_name(name, code.co_freevars, instr.arg)
             if name in free_vars:
                 val: Any = free_vars[name]
             elif func_globals is not None and name in func_globals:
@@ -463,10 +503,7 @@ def _decompile_condition(
             left = pop()
             # Map compare op to SQL operator
             arg = instr.argval
-            if isinstance(arg, int):
-                sql_op = _RICH_COMPARE_CODES.get(arg & 0xF)  # pragma: no cover
-            else:
-                sql_op = _COMPARE_OPS.get(str(arg).lower().rstrip(" ("))
+            sql_op = _compare_sql_operator(arg, instr.arg, sys.implementation.name == "pypy")
             if sql_op is None:  # pragma: no cover
                 raise DecompileError(f"Unsupported comparison operator: {arg!r}")  # pragma: no cover
             node: SqlNode = BinOp(to_node(left), sql_op, to_node(right))
@@ -474,10 +511,9 @@ def _decompile_condition(
             i += 1
             continue
 
-        if op in ("BINARY_OP",):
-            raw = instr.argval
-            # Python 3.11+ uses integer NB_* codes; earlier versions use strings
-            sql_op_b = _BINARY_OP_CODES.get(raw) if isinstance(raw, int) else raw
+        if op == "BINARY_OP" or op.startswith("BINARY_"):
+            raw = instr.argval if op == "BINARY_OP" else op
+            sql_op_b = _binary_sql_operator(op, instr.argval)
             right = pop()
             left = pop()
             if sql_op_b in ("+", "-", "*", "/"):
@@ -590,7 +626,8 @@ def _decompile_condition(
             # e.g. `tag in s.tag_list` where tag_list is a M2M Set[ShopTag]
             if sql_op == "IN" and right.kind == "attr" and entity_cls is not None:
                 attr_name = right.value
-                rel = getattr(entity_cls, "_relations_", {}).get(attr_name)
+                owner_cls = cast("EntityMeta", entity_cls)
+                rel = owner_cls._relations_.get(attr_name)
                 if rel is not None:
                     from nextorm.entity import (  # noqa: PLC0415
                         _matches_entity,
@@ -600,14 +637,14 @@ def _decompile_condition(
 
                     if rel.spec.kind == RelationKind.SET:
                         target_cls = _resolve_entity_target(rel.spec.target)
-                        owner_table = entity_cls._table_name_
+                        owner_table = owner_cls._table_name_
                         if target_cls is not None:
                             target_table = target_cls._table_name_
 
                             # Determine if M2M (target also has Set back at owner)
                             is_m2m = any(
                                 r.spec.kind == RelationKind.SET
-                                and _matches_entity(r.spec.target, entity_cls)
+                                and _matches_entity(r.spec.target, owner_cls)
                                 for r in target_cls._relations_.values()
                             )
 
@@ -615,11 +652,11 @@ def _decompile_condition(
                                 join_table = rel.spec.table or "_".join(
                                     sorted([owner_table, target_table])
                                 )
-                                owner_pk_fields = entity_cls._pk_fields_
+                                owner_pk_fields = owner_cls._pk_fields_
                                 owner_pk_col = (
-                                    entity_cls._fields_[owner_pk_fields[0]].spec.column
+                                    owner_cls._fields_[owner_pk_fields[0]].spec.column
                                     or owner_pk_fields[0]
-                                    if owner_pk_fields and owner_pk_fields[0] in entity_cls._fields_
+                                    if owner_pk_fields and owner_pk_fields[0] in owner_cls._fields_
                                     else "id"
                                 )
                                 jt_owner_col = f"{owner_table}_id"
@@ -652,21 +689,22 @@ def _decompile_condition(
                 chain = list(right.value)
                 rel_name = chain[-2]
                 field_name = chain[-1]
-                rel = getattr(entity_cls, "_relations_", {}).get(rel_name)
+                owner_cls = cast("EntityMeta", entity_cls)
+                rel = owner_cls._relations_.get(rel_name)
                 if rel is not None:
                     from nextorm.entity import _resolve_entity_target  # noqa: PLC0415
                     from nextorm.fields import RelationKind  # noqa: PLC0415
 
                     if rel.spec.kind == RelationKind.SET:
                         target_cls = _resolve_entity_target(rel.spec.target)
-                        owner_table = entity_cls._table_name_
+                        owner_table = owner_cls._table_name_
                         if target_cls is not None:
                             target_table = target_cls._table_name_
-                            owner_pk_fields = entity_cls._pk_fields_
+                            owner_pk_fields = owner_cls._pk_fields_
                             owner_pk_col = (
-                                entity_cls._fields_[owner_pk_fields[0]].spec.column
+                                owner_cls._fields_[owner_pk_fields[0]].spec.column
                                 or owner_pk_fields[0]
-                                if owner_pk_fields and owner_pk_fields[0] in entity_cls._fields_
+                                if owner_pk_fields and owner_pk_fields[0] in owner_cls._fields_
                                 else "id"
                             )
                             # Find back-ref FK col on target
@@ -677,7 +715,7 @@ def _decompile_condition(
                                     r
                                     for r in target_cls._relations_.values()
                                     if r.spec.kind == RelationKind.SINGLE
-                                    and _matches_entity(r.spec.target, entity_cls)
+                                    and _matches_entity(r.spec.target, owner_cls)
                                 ),
                                 None,
                             )

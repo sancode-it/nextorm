@@ -7,6 +7,7 @@ Registered under the name ``"mariadb"`` via :func:`register_provider`."""
 
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
@@ -186,6 +187,16 @@ class MariaDBSyncProvider(SyncProvider):
 # ---------------------------------------------------------------------------
 
 
+def _ensure_asyncmy_runtime_supported() -> None:
+    """Reject PyPy before loading asyncmy's unsafe C-extension result types."""
+    if sys.implementation.name == "pypy":
+        raise RuntimeError(
+            "Async MariaDB support via asyncmy is not supported on PyPy. "
+            "asyncmy's C extension can abort PyPy during result cleanup; "
+            "use CPython or bind to another async database backend."
+        )
+
+
 class MariaDBAsyncCursor(AsyncCursor):
     """Wraps an :class:`asyncmy.cursors.Cursor`.
 
@@ -293,6 +304,7 @@ class MariaDBAsyncProvider(AsyncProvider):
         RuntimeError
             If ``asyncmy`` is not installed.
         """
+        _ensure_asyncmy_runtime_supported()
         try:
             import asyncmy as _am  # noqa: PLC0415
         except ImportError as exc:  # pragma: no cover

@@ -505,6 +505,29 @@ def test_decompile_unsupported_binary_op() -> None:
         select(gen)
 
 
+def test_cross_runtime_bytecode_normalizers() -> None:
+    """Cover PyPy's bytecode metadata branches when running under CPython."""
+    from nextorm.generators import (  # noqa: PLC0415
+        _binary_sql_operator,
+        _compare_sql_operator,
+        _resolve_freevar_name,
+    )
+
+    assert _resolve_freevar_name("expected", ("expected",), 0) == "expected"
+    assert _resolve_freevar_name(".0", ("expected",), 0) == "expected"
+    assert _resolve_freevar_name(".0", ("expected",), None) == ".0"
+    assert _resolve_freevar_name(".0", ("expected",), 2) == ".0"
+
+    assert _compare_sql_operator("<", 2, True) == "=="
+    assert _compare_sql_operator(4, 0, False) == ">"
+    assert _compare_sql_operator("==", 2, False) == "="
+
+    assert _binary_sql_operator("BINARY_OP", 0) == "+"
+    assert _binary_sql_operator("BINARY_OP", "+") == "+"
+    assert _binary_sql_operator("BINARY_ADD", None) == "+"
+    assert _binary_sql_operator("BINARY_MODULO", None) is None
+
+
 def test_decompile_condition_no_filter_returns_none() -> None:
     """A generator with no if clause should return None condition."""
     # A generator with no filter: code has no POP_JUMP_IF_FALSE

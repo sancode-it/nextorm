@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -518,6 +519,9 @@ def test_async_provider_name() -> None:
     assert MariaDBAsyncProvider.name == "mariadb"
 
 
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy", reason="asyncmy-backed MariaDB integration requires CPython"
+)
 def test_async_provider_connect_returns_connection() -> None:
     async def _run() -> None:
         p = MariaDBAsyncProvider()
@@ -528,6 +532,9 @@ def test_async_provider_connect_returns_connection() -> None:
     run(_run())
 
 
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy", reason="asyncmy-backed MariaDB integration requires CPython"
+)
 def test_async_cursor_execute_select() -> None:
     async def _run() -> None:
         p = MariaDBAsyncProvider()
@@ -542,6 +549,9 @@ def test_async_cursor_execute_select() -> None:
     run(_run())
 
 
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy", reason="asyncmy-backed MariaDB integration requires CPython"
+)
 def test_async_cursor_fetchall() -> None:
     async def _run() -> None:
         p = MariaDBAsyncProvider()
@@ -556,6 +566,9 @@ def test_async_cursor_fetchall() -> None:
     run(_run())
 
 
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy", reason="asyncmy-backed MariaDB integration requires CPython"
+)
 def test_async_cursor_fetchmany() -> None:
     async def _run() -> None:
         p = MariaDBAsyncProvider()
@@ -572,6 +585,9 @@ def test_async_cursor_fetchmany() -> None:
     run(_run())
 
 
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy", reason="asyncmy-backed MariaDB integration requires CPython"
+)
 def test_async_cursor_description() -> None:
     async def _run() -> None:
         p = MariaDBAsyncProvider()
@@ -586,6 +602,9 @@ def test_async_cursor_description() -> None:
     run(_run())
 
 
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy", reason="asyncmy-backed MariaDB integration requires CPython"
+)
 def test_async_cursor_description_before_execute() -> None:
     async def _run() -> None:
         p = MariaDBAsyncProvider()
@@ -598,6 +617,9 @@ def test_async_cursor_description_before_execute() -> None:
     run(_run())
 
 
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy", reason="asyncmy-backed MariaDB integration requires CPython"
+)
 def test_async_cursor_lastrowid_after_insert() -> None:
     async def _run() -> None:
         p_sync = MariaDBSyncProvider()
@@ -626,6 +648,9 @@ def test_async_cursor_lastrowid_after_insert() -> None:
     run(_run())
 
 
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy", reason="asyncmy-backed MariaDB integration requires CPython"
+)
 def test_async_connection_raw() -> None:
     async def _run() -> None:
         import asyncmy.connection  # noqa: PLC0415
@@ -638,6 +663,9 @@ def test_async_connection_raw() -> None:
     run(_run())
 
 
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy", reason="asyncmy-backed MariaDB integration requires CPython"
+)
 def test_async_execute_ddl_empty_is_noop() -> None:
     async def _run() -> None:
         p = MariaDBAsyncProvider()
@@ -648,6 +676,9 @@ def test_async_execute_ddl_empty_is_noop() -> None:
     run(_run())
 
 
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy", reason="asyncmy-backed MariaDB integration requires CPython"
+)
 def test_async_execute_ddl_creates_table() -> None:
     async def _run() -> None:
         p_sync = MariaDBSyncProvider()
@@ -679,6 +710,9 @@ def test_async_execute_ddl_creates_table() -> None:
     run(_run())
 
 
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy", reason="asyncmy-backed MariaDB integration requires CPython"
+)
 def test_async_execute_ddl_multiple_statements() -> None:
     async def _run() -> None:
         p_sync = MariaDBSyncProvider()
@@ -714,6 +748,9 @@ def test_async_execute_ddl_multiple_statements() -> None:
     run(_run())
 
 
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy", reason="asyncmy-backed MariaDB integration requires CPython"
+)
 def test_async_execute_ddl_trailing_semicolons() -> None:
     async def _run() -> None:
         p_sync = MariaDBSyncProvider()
@@ -737,6 +774,9 @@ def test_async_execute_ddl_trailing_semicolons() -> None:
     run(_run())
 
 
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy", reason="asyncmy-backed MariaDB integration requires CPython"
+)
 def test_async_cursor_executemany() -> None:
     async def _run() -> None:
         p_sync = MariaDBSyncProvider()
@@ -764,6 +804,9 @@ def test_async_cursor_executemany() -> None:
     run(_run())
 
 
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy", reason="asyncmy-backed MariaDB integration requires CPython"
+)
 def test_async_connection_commit() -> None:
     async def _run() -> None:
         p = MariaDBAsyncProvider()
@@ -774,6 +817,9 @@ def test_async_connection_commit() -> None:
     run(_run())
 
 
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy", reason="asyncmy-backed MariaDB integration requires CPython"
+)
 def test_async_connection_rollback() -> None:
     async def _run() -> None:
         p = MariaDBAsyncProvider()
@@ -784,6 +830,9 @@ def test_async_connection_rollback() -> None:
     run(_run())
 
 
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy", reason="asyncmy-backed MariaDB integration requires CPython"
+)
 def test_async_connection_executescript() -> None:
     async def _run() -> None:
         p_sync = MariaDBSyncProvider()

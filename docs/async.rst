@@ -193,6 +193,12 @@ Connection providers
              db="myapp",
          )
 
+.. note::
+
+   The asynchronous MariaDB backend uses ``asyncmy``, whose C extension is
+   currently unsafe on PyPy. Use CPython for async MariaDB connections. The
+   synchronous MariaDB provider and other async backends are unaffected.
+
 Async connection pool
 ---------------------
 

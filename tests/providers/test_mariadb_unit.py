@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from nextorm.providers.base import SyncCursor
 from nextorm.providers.mariadb import (
@@ -508,12 +511,23 @@ def test_async_provider_name_unit() -> None:
 def test_async_provider_connect_unit() -> None:
     async def _run() -> None:
         mock_raw = MagicMock()
-        with patch("asyncmy.connect", new_callable=AsyncMock, return_value=mock_raw):
+        with (
+            patch("nextorm.providers.mariadb._ensure_asyncmy_runtime_supported"),
+            patch("asyncmy.connect", new_callable=AsyncMock, return_value=mock_raw),
+        ):
             p = MariaDBAsyncProvider()
             conn = await p.connect(host="localhost", user="root", password="", database="test")
             assert isinstance(conn, MariaDBAsyncConnection)
 
     run(_run())
+
+
+def test_async_provider_rejects_pypy_runtime() -> None:
+    with (
+        patch("nextorm.providers.mariadb.sys.implementation", SimpleNamespace(name="pypy")),
+        pytest.raises(RuntimeError, match="not supported on PyPy"),
+    ):
+        run(MariaDBAsyncProvider().connect())
 
 
 def test_async_execute_ddl_empty_unit() -> None:

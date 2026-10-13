@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import sys
 import typing
 from typing import Any
 
@@ -937,7 +938,10 @@ class _AsyncMariaDBPKOnly(Entity):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not _mariadb_available(), reason="No MariaDB server reachable")
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy" or not _mariadb_available(),
+    reason="asyncmy-backed MariaDB integration requires CPython and a reachable server",
+)
 async def test_async_do_insert_pk_only_entity_mariadb() -> None:
     """PKOnly entity on MariaDB uses 'INSERT INTO t VALUES ()' (async path)."""
     import pymysql  # noqa: PLC0415
@@ -959,7 +963,10 @@ async def test_async_do_insert_pk_only_entity_mariadb() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not _mariadb_available(), reason="No MariaDB server reachable")
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy" or not _mariadb_available(),
+    reason="asyncmy-backed MariaDB integration requires CPython and a reachable server",
+)
 async def test_async_mariadb_basic_crud() -> None:
     """Full async CRUD cycle via AsyncDatabase on a live MariaDB server."""
     import pymysql  # noqa: PLC0415
