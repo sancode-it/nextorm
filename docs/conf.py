@@ -49,6 +49,7 @@ except metadata.PackageNotFoundError:
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
+    "sphinx.ext.doctest",
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
     "sphinx.ext.napoleon",
@@ -94,7 +95,7 @@ html_theme_options = {
     "footer_icons": [
         {
             "name": "Discord",
-            "url": "https://discord.gg/<INVITE_CODE>",
+            "url": "https://discord.gg/PevUtddqCM",
             "html": """
                 <svg stroke="currentColor" fill="currentColor" stroke-width="0"
                     viewBox="0 0 24 24">

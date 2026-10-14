@@ -65,6 +65,7 @@ dev = [
 [tool.pdm.scripts]
 test = {cmd = "pytest", help = "Run tests"}
 coverage = {cmd = "pytest --cov=nextorm --cov-report=term-missing", help = "Run tests with coverage"}
+coverage_html = {cmd = "pytest --cov=nextorm --cov-report=html", help = "Run tests with coverage"}
 typecheck = {composite = ["pyright", "mypy"], help = "Run all type checkers"}
 pyright = {cmd = "pyright", help = "Run pyright type checker"}
 mypy = {cmd = "mypy", help = "Run mypy type checker"}
@@ -72,6 +73,7 @@ lint = {cmd = "ruff check .", help = "Run ruff linter"}
 fix = {cmd = "ruff check --fix .", help = "Fix linting issues with ruff"}
 format = {cmd = "ruff format .", help = "Format code with ruff"}
 docs-html = {cmd = "sphinx-build -b html docs/ docs/_build/html", help = "Build HTML documentation"}
+docs-test = {cmd = "sphinx-build -b doctest docs/ docs/_build/doctest", help = "Run doctests in documentation"}
 docs-clean = {cmd = "rm -rf docs/_build", help = "Remove built documentation"}
 
 [tool.pytest.ini_options]

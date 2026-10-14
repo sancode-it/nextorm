@@ -131,3 +131,9 @@ It brings the expressive PonyORM query style into the era of Python 3.12+ type a
    :caption: Migration guide
 
    ponyorm
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Development
+
+   developing

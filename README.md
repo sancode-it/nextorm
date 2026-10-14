@@ -145,13 +145,13 @@ Join here: **https://discord.gg/PevUtddqCM**
 ## Development
 
 ```bash
-pdm install
-pdm test          # run tests
-pdm coverage      # tests + branch coverage (must be 100%)
-pdm typecheck     # pyright + mypy
-pdm lint          # ruff
-pdm format        # ruff format
-pdm docs-html     # build Sphinx docs
+pdm install --dev  # install dev dependencies
+pdm test           # run tests
+pdm coverage       # tests + branch coverage (must be 100%)
+pdm typecheck      # pyright + mypy
+pdm lint           # ruff
+pdm format         # ruff format
+pdm docs-html      # build Sphinx docs
 ```
 
 ## Acknowledgements
