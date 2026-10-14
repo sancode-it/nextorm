@@ -99,6 +99,13 @@ def test_sync_cursor_execute_with_params() -> None:
     mock_cur.execute.assert_called_once_with("SELECT %s", (1,))
 
 
+def test_sync_cursor_execute_with_mapping_params() -> None:
+    mock_cur = _mock_sync_cursor()
+    cursor = MariaDBSyncCursor(mock_cur)
+    cursor.execute("SELECT %(value)s", {"value": 1})
+    mock_cur.execute.assert_called_once_with("SELECT %(value)s", {"value": 1})
+
+
 def test_sync_cursor_executemany() -> None:
     mock_cur = _mock_sync_cursor()
     cursor = MariaDBSyncCursor(mock_cur)

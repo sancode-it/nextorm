@@ -8,10 +8,11 @@ Registered under the name ``"mariadb"`` via :func:`register_provider`."""
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 
     import asyncmy.connection
     import asyncmy.cursors
@@ -70,7 +71,8 @@ class MariaDBSyncCursor(SyncCursor):
         sql: str,
         parameters: Sequence[Any] | Mapping[str, Any] = (),
     ) -> None:
-        self._cursor.execute(sql, parameters)
+        args = dict(parameters) if isinstance(parameters, Mapping) else tuple(parameters)
+        self._cursor.execute(sql, args)
 
     def executemany(
         self,
