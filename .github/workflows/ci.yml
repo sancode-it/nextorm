@@ -6,20 +6,26 @@ on:
   pull_request:
     branches: ["main"]
 
+permissions: {}
+
 jobs:
   test:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13", "3.14", "3.15", "pypy-3.12"]
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -29,11 +35,14 @@ jobs:
       - name: Install dependencies
         run: pdm install
 
+      - name: Format check
+        run: pdm run ruff format --check
+
       - name: Lint
-        run: pdm run ruff check nextorm/ tests/
+        run: pdm run ruff check
 
       - name: Type check
-        run: pdm run pyright nextorm/
+        run: pdm typecheck
 
       - name: Test (SQLite only — no DB server in CI)
         run: pdm run pytest tests/ --ignore=tests/providers -q
@@ -41,12 +50,16 @@ jobs:
   docs:
     name: Docs
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.14"
 
