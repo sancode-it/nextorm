@@ -796,9 +796,8 @@ async def test_async_session_nested_exception_propagates() -> None:
     await _db.generate_mapping(create_tables=True)
 
     with pytest.raises(RuntimeError):
-        async with db_session:
-            async with db_session:
-                raise RuntimeError("inner async abort")
+        async with db_session, db_session:
+            raise RuntimeError("inner async abort")
 
     result = await _db.aselect(_AsyncNestRoll).fetch_all()
     assert result == []
