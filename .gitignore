@@ -1,23 +1,46 @@
-__pycache__/
+# Byte-compiled / optimized
+__pycache__
 *.py[cod]
 *$py.class
 *.so
+
+# Distribution / packaging
+*.egg-info
+/build
+/dist
+pip-wheel-metadata
+
+# Virtualenv
+.venv
+venv
 .Python
-.venv/
-venv/
-dist/
-build/
-*.egg-info/
+
+# Unit test / coverage reports
+.coverage
+htmlcov
+.tox
+
+# Type checkers
+.pyright
+
+# Caches
+.cache
+.*_cache
+
+# PDM
 .pdm-python
-.pdm-build/
+.pdm-build
+.python-version
 pdm.lock
 pylock.toml
-.coverage
-htmlcov/
-.pytest_cache/
-.ruff_cache/
-.pyright/
-.mypy_cache/
-__pypackages__/
+__pypackages__
+
+# logging
 *.log
-docs/_build/
+
+# Sphinx documentation
+/docs/_build
+
+# Editor
+/.vscode
+/.idea
