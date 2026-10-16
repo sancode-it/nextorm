@@ -41,8 +41,13 @@ jobs:
       - name: Lint
         run: pdm run ruff check
 
-      - name: Type check
+      - name: Type check (CPython)
+        if: matrix.python-version != 'pypy-3.12'
         run: pdm typecheck
+
+      - name: Type check (PyPy)
+        if: matrix.python-version == 'pypy-3.12'
+        run: pdm pyright
 
       - name: Test (SQLite only — no DB server in CI)
         run: pdm run pytest tests/ --ignore=tests/providers -q
