@@ -1,6 +1,38 @@
 Changelog
 =========
 
+0.5.0 — 2026-10-16
+------------------
+
+**Features:**
+
+- Add support for Python 3.15 and PyPy 3.12.
+
+**Compatibility:**
+
+- The async MariaDB provider now fails fast with a clear ``RuntimeError`` on
+  PyPy. Its ``asyncmy`` C extension can abort PyPy while cleaning up query
+  results; the synchronous MariaDB provider remains available through PyMySQL.
+
+**Fixes:**
+
+- Support dict and tuple for MariaDB parameters.
+
+**Tools:**
+
+- Add a tracked Git ``pre-commit`` hook for Ruff checks on staged Python files.
+- Add doctests including a pdm script.
+- Add a PDM script for HTML coverage output.
+
+**Documentation:**
+
+- Add docs for NextORM development.
+
+**Deployment:**
+
+- Harden github actions.
+- Run doc tests on CI.
+
 0.4.3 — 2026-08-20
 ------------------
 
