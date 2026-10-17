@@ -1,6 +1,17 @@
 Changelog
 =========
 
+0.5.1 — 2026-10-17
+------------------
+
+**Type fixes:**
+
+- ``Entity[pk]`` now retains the concrete entity type for static type checkers.
+
+**Tools:**
+
+- Update pytest configuration.
+
 0.5.0 — 2026-10-16
 ------------------
 

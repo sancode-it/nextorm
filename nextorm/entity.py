@@ -1523,7 +1523,7 @@ class EntityMeta(type):
         """
         return _EntityIterator(cls)
 
-    def __getitem__(cls, pk: Any) -> Any:
+    def __getitem__[EntityT: Entity](cls: type[EntityT], pk: Any) -> EntityT:  # type: ignore[misc]
         """Look up an entity by primary key — single or composite.
 
         For a **single-column** PK pass the value directly::
@@ -1540,6 +1540,10 @@ class EntityMeta(type):
         Raises :exc:`ValueError` when the number of values does not match the
         number of PK fields on a composite key.
         """
+        return cast("EntityT", EntityMeta._get_by_pk(cast("EntityMeta", cls), pk))
+
+    def _get_by_pk(cls, pk: Any) -> Entity:
+        """Perform the PK lookup for :meth:`__getitem__`."""
         pk_fields = cls._pk_fields_
         pk_any: Any = pk
         pk_tuple2: tuple[Any, ...] | None = None
@@ -1629,7 +1633,7 @@ class EntityMeta(type):
             result = qs.get()
             if result is None:
                 raise KeyError(pk_any)  # pyright: ignore[reportUnknownArgumentType]
-            return result
+            return cast("Entity", result)
 
         # Composite PK
         assert pk_tuple2 is not None
@@ -1644,7 +1648,7 @@ class EntityMeta(type):
         result = qs.get()
         if result is None:
             raise KeyError(pk_tuple2)
-        return result
+        return cast("Entity", result)
 
 
 class Entity(metaclass=EntityMeta):
